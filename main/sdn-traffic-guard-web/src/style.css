@@ -1,0 +1,82 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 全局样式 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background-color: #F2F3F5;
+  color: #1D2129;
+}
+
+/* 自定义工具类 */
+@layer utilities {
+  .content-auto {
+    content-visibility: auto;
+  }
+  .card-shadow {
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  }
+  .transition-all-300 {
+    transition: all 300ms ease-in-out;
+  }
+  .sidebar-width {
+    width: 256px;
+  }
+  .sidebar-width-collapsed {
+    width: 80px;
+  }
+}
+
+@layer components {
+  .auth-page {
+    @apply min-h-screen flex items-center justify-center px-4 py-10;
+    background: radial-gradient(circle at 15% 20%, rgba(22, 93, 255, 0.04), transparent 35%),
+                radial-gradient(circle at 85% 10%, rgba(82, 196, 26, 0.03), transparent 30%),
+                radial-gradient(circle at 80% 80%, rgba(250, 173, 20, 0.03), transparent 30%);
+    background-color: #f9fbff;
+  }
+
+  .auth-shell {
+    @apply w-full max-w-5xl grid grid-cols-1 md:grid-cols-2 gap-8 items-start;
+  }
+
+  .auth-panel {
+    @apply bg-white rounded-2xl border border-light-2 shadow-sm p-8;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.06);
+  }
+
+  .auth-title {
+    @apply text-2xl md:text-3xl font-bold text-dark;
+  }
+
+  .auth-subtitle {
+    @apply text-sm text-dark-2;
+  }
+
+  .auth-input {
+    @apply appearance-none relative block w-full pl-10 pr-3 py-3 border border-light-2 placeholder-gray-500 text-dark rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition;
+  }
+
+  .auth-button {
+    @apply w-full flex justify-center items-center py-3 px-4 text-sm font-medium rounded-xl text-white bg-primary hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:ring-offset-1 focus:ring-offset-white transition disabled:opacity-60 disabled:cursor-not-allowed;
+  }
+
+  .auth-link {
+    @apply text-primary hover:text-primary/80 font-medium transition-colors;
+  }
+
+  .auth-pill {
+    @apply inline-flex items-center px-3 py-2 rounded-xl bg-light-1 text-dark-2 text-sm font-medium;
+  }
+
+  .auth-badge {
+    @apply inline-flex items-center justify-center w-12 h-12 rounded-xl bg-primary/10 text-primary;
+  }
+}

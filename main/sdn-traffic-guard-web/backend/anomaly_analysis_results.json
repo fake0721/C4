@@ -1,0 +1,29 @@
+{
+  "total_anomalies": 1387,
+  "target_ip_anomalies": 1,
+  "time_range": "最近24小时",
+  "target_ip": "192.168.1.100",
+  "anomaly_types": {
+    "ICMP Flood": 27,
+    "UDP Flood": 1289,
+    "ARP 欺骗": 47,
+    "黑名单丢弃": 24
+  },
+  "source_ips": {
+    "192.168.1.104": 26,
+    "192.168.1.100": 1,
+    "192.168.1.103": 1289,
+    "192.168.1.101": 47,
+    "192.168.1.105": 24
+  },
+  "target_ip_details": [
+    {
+      "time": "2025-10-04 17:03:36",
+      "type": "ICMP Flood",
+      "details": "rate=381300.4",
+      "rate_kbps": 381300.4,
+      "severity": "high"
+    }
+  ],
+  "filtered_count": 0
+}

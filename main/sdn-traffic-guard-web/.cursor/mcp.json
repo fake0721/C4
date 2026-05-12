@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "mysql": {
+      "command": "python",
+      "args": ["-m", "mysql_mcp_server"],
+      "env": {
+        "MYSQL_HOST": "localhost",
+        "MYSQL_PORT": "3306",
+        "MYSQL_USER": "root",
+        "MYSQL_PASSWORD": "yyr0218...",
+        "MYSQL_DATABASE": "network_management"
+      }
+    }
+  }
+}
