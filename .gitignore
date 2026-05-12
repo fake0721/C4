@@ -1,0 +1,29 @@
+# Dependencies and caches
+node_modules/
+npm_cache/
+.venv/
+__pycache__/
+*.pyc
+
+# Large VM files and SDN folders
+ubuntu-sdn/
+SDN/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.vscode-profile
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local environment
+.env.local
+*.log
+
+# Build outputs
+dist/
+build/
