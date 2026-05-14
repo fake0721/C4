@@ -12,7 +12,7 @@ from datetime import datetime
 
 try:
     from langchain_community.document_loaders import TextLoader, DirectoryLoader
-    from langchain.text_splitter import RecursiveCharacterTextSplitter
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
     from langchain_community.embeddings import HuggingFaceEmbeddings
     from langchain_community.vectorstores import Chroma
     LANGCHAIN_AVAILABLE = True
@@ -43,12 +43,26 @@ class NetworkSecurityRAG:
         # 初始化向量模型和数据库
         if LANGCHAIN_AVAILABLE:
             try:
-                print(f"[🔄] 初始化HuggingFaceEmbeddings...")
-                self.embeddings = HuggingFaceEmbeddings(
-                    model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-                    model_kwargs={'device': 'cpu'},  # 使用CPU避免显存占用过大
-                    encode_kwargs={'normalize_embeddings': True}
-                )
+                import os
+                # 尝试优先使用阿里云DashScope DashScopeEmbeddings
+                api_key = os.getenv("DASHSCOPE_API_KEY", "")
+                if api_key:
+                    from langchain_community.embeddings import DashScopeEmbeddings
+                    print(f"[🔄] 初始化 DashScopeEmbeddings...")
+                    self.embeddings = DashScopeEmbeddings(
+                        model=os.getenv("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v3"),
+                        dashscope_api_key=api_key
+                    )
+                else:
+                    print(f"[🔄] 未找到 DASHSCOPE_API_KEY，降级使用 HuggingFaceEmbeddings...")
+                    # 临时强制走国内镜像以防卡死
+                    os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+                    self.embeddings = HuggingFaceEmbeddings(
+                        model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+                        model_kwargs={'device': 'cpu'},  # 使用CPU避免显存占用过大
+                        encode_kwargs={'normalize_embeddings': True}
+                    )
+                
                 print(f"[✅] Embeddings初始化成功")
                 
                 print(f"[🔄] 初始化Chroma向量数据库...")
@@ -138,7 +152,7 @@ class NetworkSecurityRAG:
             print(f"[📝] 开始添加 {len(chunks)} 个文档块到知识库")
             
             # 将字典格式的chunks转换为LangChain Document格式
-            from langchain.schema import Document
+            from langchain_core.documents import Document
             
             documents = []
             for i, chunk in enumerate(chunks):
@@ -212,6 +226,13 @@ class NetworkSecurityRAG:
         except Exception as e:
             print(f"❌ 知识库检索失败: {e}")
             return []
+
+    # 兼容 agent_routes.py 中异步调用的名称
+    async def search_similar_documents(self, query: str, k: int = 3) -> List[str]:
+        """
+        异步检索相关文档 (兼容接口)
+        """
+        return self.retrieve_knowledge(query, top_k=k)
     
     def _call_ollama(self, prompt: str, temperature: float = 0.3) -> str:
         """

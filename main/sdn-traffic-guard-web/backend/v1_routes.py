@@ -11,6 +11,7 @@ import requests
 import uuid
 import json
 import os
+import logging
 from decimal import Decimal
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -26,6 +27,7 @@ from pathlib import Path
 
 env_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(env_path)
+logger = logging.getLogger(__name__)
 
 # 自定义JSON编码器，支持Decimal类型
 class DecimalEncoder(json.JSONEncoder):

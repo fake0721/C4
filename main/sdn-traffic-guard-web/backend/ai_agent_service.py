@@ -9,6 +9,18 @@ import requests
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from dotenv import load_dotenv
+try:
+    from .dashscope_kimi import (
+        build_kimi_payload,
+        build_kimi_request_config,
+        extract_kimi_response_content,
+    )
+except ImportError:
+    from dashscope_kimi import (
+        build_kimi_payload,
+        build_kimi_request_config,
+        extract_kimi_response_content,
+    )
 
 # 加载环境变量
 load_dotenv()
@@ -18,7 +30,16 @@ class AIAgentService:
     
     def __init__(self):
         self.dashscope_api_key = os.getenv("DASHSCOPE_API_KEY", "")
-        self.kimi_api_key = os.getenv("KIMI_API_KEY", "")
+        self.dashscope_base_url = os.getenv(
+            "DASHSCOPE_BASE_URL",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        )
+        self.kimi_api_key = os.getenv("KIMI_API_KEY", "") or self.dashscope_api_key
+        self.kimi_api_model = os.getenv("KIMI_API_MODEL", "kimi-2.5")
+        self.kimi_api_url = os.getenv(
+            "KIMI_API_URL",
+            "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
+        )
         
     async def process_message(self, message: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """处理用户消息 - 使用Kimi API"""
@@ -31,8 +52,6 @@ class AIAgentService:
                 }
             
             # Kimi API配置
-            url = os.getenv("KIMI_API_URL", "https://api.moonshot.cn/v1/chat/completions")
-            
             headers = {
                 "Authorization": f"Bearer {self.kimi_api_key}",
                 "Content-Type": "application/json"
@@ -44,25 +63,35 @@ class AIAgentService:
             if context:
                 user_prompt += f"\n\n相关上下文：{json.dumps(context, ensure_ascii=False)}"
             
-            data = {
-                "model": os.getenv("KIMI_API_MODEL", "kimi-2.5"),
-                "messages": [
+            request_config = build_kimi_request_config(
+                api_url=self.kimi_api_url,
+                base_url=self.dashscope_base_url,
+                model=self.kimi_api_model,
+            )
+            data = build_kimi_payload(
+                api_style=request_config["api_style"],
+                model=request_config["model"],
+                messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                "temperature": 0.7,
-                "max_tokens": 2000
-            }
+                temperature=0.7,
+                max_tokens=2000,
+                stream=False,
+            )
             
             # 发送请求
-            response = requests.post(url, headers=headers, json=data, timeout=30)
+            response = requests.post(request_config["url"], headers=headers, json=data, timeout=30)
             response.raise_for_status()
             
             result = response.json()
-            ai_response = result.get("output", {}).get("choices", [{}])[0].get("message", {}).get("content", "抱歉，我无法处理您的请求")
+            ai_response = (
+                result.get("output", {}).get("choices", [{}])[0]
+                .get("message", {}).get("content", "抱歉，我无法处理您的请求")
+            )
             
             return {
-                "response": ai_response,
+                "response": extract_kimi_response_content(result) or ai_response,
                 "tools_used": ["通义千问API"],
                 "timestamp": datetime.now().isoformat()
             }

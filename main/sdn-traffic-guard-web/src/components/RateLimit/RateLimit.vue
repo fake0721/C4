@@ -594,6 +594,16 @@
         </div>
       </div>
     </div>
+
+    <ExportDialog
+      v-model="showExportDialog"
+      title="导出处置记录报告"
+      default-type="handling_records"
+      :default-hours="24"
+      :export-types="handlingExportTypes"
+      :filters="{ source: 'rate-limit-page', active_tab: activeTab }"
+      :payload="handlingExportPayload"
+    />
   </div>
 </template>
 
@@ -601,6 +611,7 @@
 import { ref, onMounted, computed, watch, nextTick } from 'vue'
 import Chart from 'chart.js/auto'
 import ryuAPI from '@/api/ryu'
+import ExportDialog from '@/components/common/ExportDialog.vue'
 
 // 页面状态变量
 const searchQuery = ref('')
@@ -609,6 +620,7 @@ const showAddLimitModal = ref(false)
 const showEditModal = ref(false)
 const showReleaseModal = ref(false)
 const showBlockModal = ref(false)
+const showExportDialog = ref(false)
 const loading = ref(false)
 const historyDate = ref('')
 const activeTab = ref('current') // 当前激活的标签页：'current' 或 'history'
@@ -640,6 +652,21 @@ const filteredHosts = computed(() => {
 
 // 历史限速记录数据
 const historyRecords = ref([])
+const handlingExportTypes = [
+  { label: '处置记录报告', value: 'handling_records' }
+]
+const handlingExportPayload = computed(() => {
+  const source = activeTab.value === 'history' ? historyRecords.value : filteredHosts.value
+  const items = (Array.isArray(source) ? source : []).map(record => ({
+    src_ip: record.src_ip || record.ip || '',
+    action: record.action || 'limit',
+    reason: record.reason || '未知',
+    created_at: record.created_at || record.start_time || record.startTime || '',
+    operator: record.operator || 'admin',
+    kbps: record.kbps || record.speed || record.rate || ''
+  }))
+  return { items }
+})
 
 // 历史数据统计信息
 const historyStats = ref({
@@ -2094,8 +2121,7 @@ const updateLimitRule = async () => {
 }
 
 const exportData = () => {
-  // 导出数据逻辑
-  console.log('导出数据')
+  showExportDialog.value = true
 }
 
 // 历史限速相关函数

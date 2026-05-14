@@ -120,6 +120,10 @@ from v1_routes import router as v1_router
 app.include_router(v1_router, prefix="/api")
 app.include_router(v1_router)
 
+# 多格式文档导出
+from export_routes import router as export_router
+app.include_router(export_router)
+
 # 导入Agent路由（RAG + MCP + Agent）
 try:
     from agent_routes import router as agent_router

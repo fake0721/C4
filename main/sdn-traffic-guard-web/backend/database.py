@@ -12,7 +12,7 @@ load_dotenv(env_path)
 DB_HOST = os.getenv("DB_HOST") or "127.0.0.1"
 DB_PORT = os.getenv("DB_PORT") or "3306"
 DB_USER = os.getenv("DB_USER") or "root"
-DB_PASSWORD = os.getenv("DB_PASSWORD") or "yyr0218..."
+DB_PASSWORD = os.getenv("DB_PASSWORD") or "wcp13636938197HM"
 DB_NAME = os.getenv("DB_NAME") or "network_management"
 
 DATABASE_URL = (

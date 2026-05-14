@@ -7,12 +7,18 @@ import json
 import requests
 import os
 import pymysql
+import time
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from dotenv import load_dotenv
+try:
+    from .dashscope_kimi import build_kimi_payload, build_kimi_request_config
+except ImportError:
+    from dashscope_kimi import build_kimi_payload, build_kimi_request_config
 
 # 加载环境变量
-load_dotenv()
+env_path = os.path.join(os.path.dirname(__file__), ".env")
+load_dotenv(env_path)
 
 try:
     from .rag_service import rag_service
@@ -32,10 +38,11 @@ except ImportError:
 
 # 数据库配置
 DB_CONFIG = {
-    'host': '192.168.126.1',
-    'user': 'root',
-    'password': 'yyr0218...',
-    'db': 'network_management',
+    'host': os.getenv("DB_HOST") or '127.0.0.1',
+    'port': int(os.getenv("DB_PORT") or "3306"),
+    'user': os.getenv("DB_USER") or 'root',
+    'password': os.getenv("DB_PASSWORD") or '',
+    'db': os.getenv("DB_NAME") or 'network_management',
     'charset': 'utf8mb4'
 }
 
@@ -53,8 +60,18 @@ class SecurityAgent:
             kimi_api_key: Kimi API密钥
             model: 使用的模型名称（kimi-2.5）
         """
-        self.kimi_api_key = kimi_api_key or os.getenv("KIMI_API_KEY", "")
-        self.kimi_api_url = os.getenv("KIMI_API_URL", "https://api.moonshot.cn/v1/chat/completions")
+        self.kimi_api_key = kimi_api_key or os.getenv("KIMI_API_KEY", "") or os.getenv("DASHSCOPE_API_KEY", "")
+        self.dashscope_base_url = os.getenv(
+            "DASHSCOPE_BASE_URL",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        )
+        self.kimi_api_url = os.getenv(
+            "KIMI_API_URL",
+            "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
+        )
+        self.kimi_connect_timeout = float(os.getenv("KIMI_API_CONNECT_TIMEOUT") or "10")
+        self.kimi_read_timeout = float(os.getenv("KIMI_API_READ_TIMEOUT") or "60")
+        self.kimi_max_retries = int(os.getenv("KIMI_API_MAX_RETRIES") or "1")
         self.model = model  # 使用Kimi 2.5模型
         
         # 混合方案：优先使用阿里云Embedding + Kimi LLM
@@ -179,16 +196,40 @@ class SecurityAgent:
                         "content": prompt
                     }
                 ],
-                "temperature": temperature
+                "temperature": temperature,
+                "result_format": "message"
             }
-            
-            response = requests.post(
-                self.kimi_api_url,
-                headers=headers,
-                json=payload,
-                timeout=30
+            request_config = build_kimi_request_config(
+                api_url=self.kimi_api_url,
+                base_url=self.dashscope_base_url,
+                model=self.model,
             )
-            response.raise_for_status()
+            payload = build_kimi_payload(
+                api_style=request_config["api_style"],
+                model=request_config["model"],
+                messages=payload["messages"],
+                temperature=temperature,
+                stream=False,
+            )
+
+            max_retries = max(0, int(getattr(self, "kimi_max_retries", 1)))
+            connect_timeout = float(getattr(self, "kimi_connect_timeout", 10))
+            read_timeout = float(getattr(self, "kimi_read_timeout", 60))
+            response = None
+            for attempt in range(max_retries + 1):
+                try:
+                    response = requests.post(
+                        request_config["url"],
+                        headers=headers,
+                        json=payload,
+                        timeout=(connect_timeout, read_timeout)
+                    )
+                    response.raise_for_status()
+                    break
+                except requests.exceptions.ReadTimeout:
+                    if attempt >= max_retries:
+                        raise
+                    time.sleep(min(2 ** attempt, 3))
             
             result = response.json()
             if result.get("choices") and len(result["choices"]) > 0:
@@ -257,6 +298,7 @@ class SecurityAgent:
     
     # ========== MCP工具1: 查询ACL状态 ==========
     def _tool_query_acl_status(self, ip: str) -> Dict[str, Any]:
+        conn = None
         """查询IP的黑白名单状态"""
         try:
             conn = pymysql.connect(**DB_CONFIG)
@@ -298,6 +340,7 @@ class SecurityAgent:
 
     # ========== MCP工具1.5: 查询所有黑名单IP ==========
     def _tool_query_acl_blacklist(self) -> Dict[str, Any]:
+        conn = None
         """查询所有黑名单IP（完整列表）"""
         try:
             conn = pymysql.connect(**DB_CONFIG)
@@ -334,6 +377,7 @@ class SecurityAgent:
 
     # ========== MCP工具1.6: 查询所有白名单IP ==========
     def _tool_query_acl_whitelist(self) -> Dict[str, Any]:
+        conn = None
         """查询所有白名单IP（完整列表）"""
         try:
             conn = pymysql.connect(**DB_CONFIG)
@@ -370,6 +414,7 @@ class SecurityAgent:
 
     # ========== MCP工具2: 查询限速历史 ==========
     def _tool_query_rate_limit_history(self, ip: str = None, reason: str = None, days: int = 7) -> Dict[str, Any]:
+        conn = None
         """
         查询限速历史
         可按IP查询，也可按限速原因查询，或两者结合
@@ -474,6 +519,7 @@ class SecurityAgent:
 
     # ========== MCP工具3: 查询攻击历史 ==========
     def _tool_query_attack_history(self, ip: str = None, attack_type: str = None, days: int = 7) -> Dict[str, Any]:
+        conn = None
         """
         查询攻击历史
         可按IP查询，也可按攻击类型查询，或两者结合
@@ -544,6 +590,7 @@ class SecurityAgent:
 
     # ========== MCP工具4: 查询流量统计 ==========
     def _tool_query_flow_stats(self, ip: str, time_range_minutes: int = 60) -> Dict[str, Any]:
+        conn = None
         """查询IP的流量统计"""
         try:
             conn = pymysql.connect(**DB_CONFIG)
@@ -816,6 +863,7 @@ class SecurityAgent:
 
     # ========== MCP工具7: 获取系统当前状态 ==========
     def _tool_get_current_status(self) -> Dict[str, Any]:
+        conn = None
         """获取系统当前状态"""
         try:
             conn = pymysql.connect(**DB_CONFIG)
@@ -974,6 +1022,7 @@ class SecurityAgent:
 
     # ========== MCP工具9: 加入黑名单（执行工具）==========
     def _tool_add_to_blacklist(self, ip: str, reason: str) -> Dict[str, Any]:
+        conn = None
         """将IP加入黑名单"""
         try:
             import requests
@@ -1039,6 +1088,7 @@ class SecurityAgent:
 
     # ========== MCP工具10: 加入白名单（执行工具）==========
     def _tool_add_to_whitelist(self, ip: str, reason: str) -> Dict[str, Any]:
+        conn = None
         """将IP加入白名单"""
         try:
             import requests
@@ -1104,6 +1154,7 @@ class SecurityAgent:
 
     # ========== MCP工具11: 从黑名单删除IP（执行工具）==========
     def _tool_remove_from_blacklist(self, ip: str, reason: str = "管理员解除") -> Dict[str, Any]:
+        conn = None
         """从黑名单删除IP"""
         try:
             import requests
@@ -1168,6 +1219,7 @@ class SecurityAgent:
 
     # ========== MCP工具12: 从白名单删除IP（执行工具）==========
     def _tool_remove_from_whitelist(self, ip: str, reason: str = "管理员解除") -> Dict[str, Any]:
+        conn = None
         """从白名单删除IP"""
         try:
             import requests
@@ -1232,6 +1284,7 @@ class SecurityAgent:
 
     # ========== MCP工具13: 解除限速（执行工具）==========
     def _tool_release_rate_limit(self, ip: str, reason: str = "管理员解除") -> Dict[str, Any]:
+        conn = None
         """解除对IP的限速"""
         try:
             import requests
@@ -1296,6 +1349,7 @@ class SecurityAgent:
 
     # ========== MCP工具14: 修改限速时长（执行工具）==========
     def _tool_modify_rate_limit_duration(self, ip: str, duration_seconds: int, reason: str = "修改限速时长") -> Dict[str, Any]:
+        conn = None
         """修改对IP的限速时长"""
         try:
             import requests
@@ -1372,6 +1426,7 @@ class SecurityAgent:
 
     # ========== MCP工具15: 修改限速数值（执行工具）==========
     def _tool_modify_rate_limit_kbps(self, ip: str, kbps: int, reason: str = "修改限速数值") -> Dict[str, Any]:
+        conn = None
         """修改对IP的限速数值（kbps）"""
         try:
             import requests

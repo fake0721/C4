@@ -26,3 +26,6 @@ dist-ssr
 # SDN folder (excluded from upload)
 # SDN/
 # SDN.zip
+
+# Generated export files
+backend/generated_exports/

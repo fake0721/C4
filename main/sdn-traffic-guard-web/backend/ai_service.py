@@ -12,15 +12,29 @@ import time
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from dotenv import load_dotenv
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter 
 from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain.schema import Document
+from langchain_core.documents import Document
 
 # 导入速率限制配置
 from config.api_config import kimi_rate_limiter
 # 导入错误处理器
 from utils.error_handler import error_handler
+try:
+    from .dashscope_kimi import (
+        build_kimi_payload,
+        build_kimi_request_config,
+        extract_kimi_response_content,
+        extract_kimi_stream_content,
+    )
+except ImportError:
+    from dashscope_kimi import (
+        build_kimi_payload,
+        build_kimi_request_config,
+        extract_kimi_response_content,
+        extract_kimi_stream_content,
+    )
 
 load_dotenv()
 
@@ -28,10 +42,18 @@ class UnifiedAIService:
     """统一的AI服务类"""
     
     def __init__(self):
-        self.kimi_api_key = os.getenv("KIMI_API_KEY", "")
+        self.kimi_api_key = os.getenv("KIMI_API_KEY", "") or os.getenv("DASHSCOPE_API_KEY", "")
         self.deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "")
         self.dashscope_api_key = os.getenv("DASHSCOPE_API_KEY", "")
-        self.kimi_api_url = os.getenv("KIMI_API_URL", "https://api.moonshot.cn/v1/chat/completions")
+        self.dashscope_base_url = os.getenv(
+            "DASHSCOPE_BASE_URL",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        )
+        self.kimi_api_url = os.getenv(
+            "KIMI_API_URL",
+            "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
+        )
+        self.kimi_api_model = os.getenv("KIMI_API_MODEL", "kimi-2.5")
         self.deepseek_api_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1/chat/completions")
         
         # 初始化嵌入模型
@@ -184,7 +206,7 @@ class UnifiedAIService:
                         error_info = error_handler.handle_api_error(429)
                         return error_handler.format_error_response({
                             "tools_used": ["kimi"],
-                            "model": "moonshot-v1-8k",
+                            "model": self.kimi_api_model,
                             "stream": False
                         }, error_info)
                     await asyncio.sleep(wait_time)
@@ -218,25 +240,31 @@ class UnifiedAIService:
                     context_str = json.dumps(context, ensure_ascii=False, indent=2)
                     messages[1]["content"] += f"\n\n相关上下文：\n{context_str}"
                 
-                data = {
-                    "model": "moonshot-v1-8k",
-                    "messages": messages,
-                    "temperature": 0.7,
-                    "max_tokens": 2000,
-                    "stream": stream
-                }
+                request_config = build_kimi_request_config(
+                    api_url=self.kimi_api_url,
+                    base_url=self.dashscope_base_url,
+                    model=self.kimi_api_model,
+                )
+                data = build_kimi_payload(
+                    api_style=request_config["api_style"],
+                    model=request_config["model"],
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=2000,
+                    stream=stream,
+                )
             
             if stream:
                 # 流式响应 - 返回生成器
                 return {
                     "stream": True,
-                    "generator": self._generate_stream_response(data, headers)
+                    "generator": self._generate_stream_response(request_config["url"], data, headers)
                 }
             else:
                 # 非流式响应
                 async with httpx.AsyncClient() as client:
                     response = await client.post(
-                        self.kimi_api_url,
+                        request_config["url"],
                         headers=headers,
                         json=data,
                         timeout=30
@@ -246,19 +274,22 @@ class UnifiedAIService:
                         error_info = error_handler.handle_api_error(response.status_code)
                         return error_handler.format_error_response({
                             "tools_used": ["kimi"],
-                            "model": "moonshot-v1-8k",
+                            "model": self.kimi_api_model,
                             "stream": False
                         }, error_info)
                 
                     response.raise_for_status()
                 
                 result = response.json()
-                ai_response = result.get("choices", [{}])[0].get("message", {}).get("content", "抱歉，我无法处理您的请求")
+                ai_response = (
+                    result.get("output", {}).get("choices", [{}])[0]
+                    .get("message", {}).get("content", "抱歉，我无法处理您的请求")
+                )
                 
                 return {
-                    "response": ai_response,
+                    "response": extract_kimi_response_content(result) or ai_response,
                     "tools_used": ["kimi"],
-                    "model": "moonshot-v1-8k",
+                    "model": request_config["model"],
                     "timestamp": datetime.now().isoformat(),
                     "stream": False
                 }
@@ -300,12 +331,12 @@ class UnifiedAIService:
                         except json.JSONDecodeError:
                             continue
 
-    async def _generate_stream_response(self, data: Dict[str, Any], headers: Dict[str, str]):
+    async def _generate_stream_response(self, request_url: str, data: Dict[str, Any], headers: Dict[str, str]):
         """生成Kimi流式响应"""
         async with httpx.AsyncClient() as client:
             async with client.stream(
                 "POST",
-                self.kimi_api_url,
+                request_url,
                 headers=headers,
                 json=data,
                 timeout=30
@@ -321,10 +352,9 @@ class UnifiedAIService:
                     if line.startswith("data: ") and line != "data: [DONE]":
                         try:
                             json_data = json.loads(line[6:])
-                            if "choices" in json_data and json_data["choices"]:
-                                delta = json_data["choices"][0].get("delta", {})
-                                if "content" in delta:
-                                    yield delta["content"]
+                            content = extract_kimi_stream_content(json_data)
+                            if content:
+                                yield content
                         except json.JSONDecodeError:
                             continue
     

@@ -99,3 +99,35 @@ CREATE INDEX idx_links_devices ON links(source_device_id, target_device_id);
 CREATE INDEX idx_traffic_timestamp ON traffic_stats(timestamp);
 CREATE INDEX idx_logs_level ON system_logs(level, created_at);
 CREATE INDEX idx_blacklist_ip ON blacklist(ip_address);
+
+-- 多格式导出任务表
+CREATE TABLE IF NOT EXISTS export_tasks (
+  id VARCHAR(36) PRIMARY KEY,
+  export_type VARCHAR(50) NOT NULL,
+  file_format VARCHAR(20) NOT NULL,
+  filters_json TEXT,
+  status VARCHAR(20) NOT NULL,
+  filename VARCHAR(255),
+  file_path TEXT,
+  row_count INT DEFAULT 0,
+  error_message TEXT,
+  created_by VARCHAR(100),
+  created_at DATETIME NOT NULL,
+  completed_at DATETIME
+);
+
+-- 导出审计记录表
+CREATE TABLE IF NOT EXISTS export_audit_logs (
+  id VARCHAR(36) PRIMARY KEY,
+  task_id VARCHAR(36) NOT NULL,
+  username VARCHAR(100),
+  export_type VARCHAR(50) NOT NULL,
+  file_format VARCHAR(20) NOT NULL,
+  filters_json TEXT,
+  created_at DATETIME NOT NULL,
+  client_ip VARCHAR(64),
+  user_agent TEXT
+);
+
+CREATE INDEX idx_export_tasks_created_at ON export_tasks(created_at);
+CREATE INDEX idx_export_audit_task_id ON export_audit_logs(task_id);

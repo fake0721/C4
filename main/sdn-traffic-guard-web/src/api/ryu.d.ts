@@ -33,6 +33,8 @@ declare module '@/api/ryu' {
     getSwitchInfo(): Promise<any>;
     getWeeklyReport(): Promise<any>;
     exportPDF(): Promise<Blob>;
+    createExportTask(body: any): Promise<any>;
+    downloadExportFile(downloadUrl: string): Promise<any>;
     getGeoIP(ip: string): Promise<any>;
     putThreshold(body: any): Promise<any>;
     bulkACL(csv: string): Promise<any>;

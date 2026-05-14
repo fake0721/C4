@@ -3,8 +3,8 @@ import json
 import numpy as np
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.schema import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter 
+from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_community.llms import Tongyi

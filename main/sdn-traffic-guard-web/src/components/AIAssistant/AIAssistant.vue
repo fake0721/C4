@@ -87,12 +87,28 @@
         </div>
         
         <div class="flex items-center space-x-2 text-xs text-gray-500">
+          <button
+            @click="showExportDialog = true"
+            class="px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 border border-blue-100 hover:bg-blue-100 transition-colors font-medium"
+          >
+            <i class="fas fa-download mr-1"></i>导出本次分析结果
+          </button>
           <span v-if="isAdmin" class="px-2 py-1 bg-yellow-50 text-yellow-700 rounded-md border border-yellow-200 font-medium">
             <i class="fas fa-crown mr-1"></i>管理员
           </span>
           <span>{{ currentUser?.username || '游客' }}</span>
         </div>
       </div>
+
+      <ExportDialog
+        v-model="showExportDialog"
+        title="导出 AI 研判报告"
+        default-type="ai_analysis"
+        :default-hours="24"
+        :export-types="aiExportTypes"
+        :filters="{ source: 'ai-assistant', conversation_id: currentConversation.id, title: currentConversation.title }"
+        :payload="aiExportPayload"
+      />
       
       <!-- 指令列表面板 - 卡片设计 -->
       <div v-if="showCommandList" class="bg-white border-b border-gray-200">
@@ -520,6 +536,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useUserStore } from '@/stores/user'
 import axios from 'axios'
+import ExportDialog from '@/components/common/ExportDialog.vue'
 
 // 定义消息结构
 interface ChatMessage {
@@ -550,6 +567,10 @@ const chatHistoryRef = ref<HTMLElement | null>(null)
 const showCommandList = ref(false)
 const uploadedFile = ref<File | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
+const showExportDialog = ref(false)
+const aiExportTypes = [
+  { label: 'AI 研判报告', value: 'ai_analysis' }
+]
 
 // 计算属性
 const currentUser = computed(() => userStore.user)
@@ -570,6 +591,15 @@ const currentConversation = computed(() => {
   }
   return conversations.value[currentConversationIndex.value] || conversations.value[0]
 })
+const aiExportPayload = computed(() => ({
+  messages: currentConversation.value.messages.map(message => ({
+    role: message.role === 'assistant' ? 'AI助手' : '用户',
+    content: message.content
+      .replace('__INTERACTIVE_DATA__\n', '')
+      .replace('__AGENT_ANALYSIS__\n', ''),
+    timestamp: formatTime(message.timestamp)
+  }))
+}))
 
 // 格式化时间
 const formatTime = (timestamp: number): string => {

@@ -94,6 +94,8 @@ export default {
   getSwitchInfo ()     { return instance.get('/v1/switch/info').then(r => r.data) },
   getWeeklyReport ()   { return instance.get('/v1/report/weekly').then(r => r.data) },
   exportPDF ()         { return instance.get('/v1/export/pdf', { responseType: 'blob' }) },
+  createExportTask (body) { return instance.post('/v1/exports', body).then(r => r.data) },
+  downloadExportFile (downloadUrl) { return instance.get(downloadUrl, { responseType: 'blob' }) },
   getGeoIP (ip)        { return instance.get(`/v1/geoip/${ip}`).then(r => r.data) },
   putThreshold (body)  { return instance.put('/v1/settings', body) },
   bulkACL (csv)        { return instance.post('/v1/bulk/acl', `csv=${encodeURIComponent(csv)}`,

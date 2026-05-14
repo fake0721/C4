@@ -7,7 +7,14 @@
           <h2 class="text-[clamp(1.5rem,3vw,2rem)] font-bold text-dark">异常检测</h2>
           <p class="text-dark-2 mt-1">实时监控网络异常行为</p>
         </div>
-        <div class="flex space-x-2">
+        <div class="flex flex-wrap justify-end gap-2">
+          <button
+            @click="showExportDialog = true"
+            class="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 text-white shadow-md hover:bg-emerald-700 transition-all duration-200 flex items-center gap-2"
+          >
+            <i class="fa fa-download"></i>
+            <span>导出</span>
+          </button>
           <button 
             v-for="period in timePeriods" 
             :key="period.value"
@@ -24,6 +31,16 @@
         </div>
       </div>
     </div>
+
+    <ExportDialog
+      v-model="showExportDialog"
+      title="导出异常与攻击报告"
+      default-type="anomalies"
+      :default-hours="selectedPeriod"
+      :export-types="anomalyExportTypes"
+      :filters="{ source: 'anomalies-page' }"
+      :payload="anomalyExportPayload"
+    />
 
     <!-- 统计卡片 -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
@@ -219,10 +236,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from 'vue';
+import { computed, ref, onMounted, onUnmounted, nextTick } from 'vue';
 import axios from 'axios';
 import * as echarts from 'echarts';
 import ryuApi from '@/api/ryu';
+import ExportDialog from '@/components/common/ExportDialog.vue';
 
 // 定义数据结构
 interface Anomaly {
@@ -244,6 +262,22 @@ const anomalies = ref<Anomaly[]>([]);  // 用于列表显示（只显示pending�
 const allAnomalies = ref<Anomaly[]>([]);  // ✅ 用于图表显示（显示所有状态）
 // ✅ 时间范围：hours=24时后端查询"今日"（从0点到现在），与Dashboard一致
 const selectedPeriod = ref<number>(24); // 默认最近一天（实际查询：今日从0点到现在）
+const showExportDialog = ref(false);
+const anomalyExportTypes = [
+  { label: '异常事件报告', value: 'anomalies' },
+  { label: '攻击会话摘要', value: 'attack_sessions' }
+];
+const anomalyExportPayload = computed(() => ({
+  items: (allAnomalies.value.length > 0 ? allAnomalies.value : anomalies.value).map(item => ({
+    src_ip: item.src_ip,
+    type: item.type || item.anomaly_type,
+    severity: item.severity,
+    detect_time: item.detect_time || item.time,
+    status: (item as any).status || 'pending',
+    details: item.details,
+    rate_kbps: item.rate_kbps
+  }))
+}));
 
 // 时间筛选选项
 const timePeriods = ref([
