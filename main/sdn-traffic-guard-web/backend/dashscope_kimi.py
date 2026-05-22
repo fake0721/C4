@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
+import requests
+
 
 DEFAULT_DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_NATIVE_KIMI_URL = (
@@ -108,6 +110,19 @@ def extract_kimi_stream_content(chunk: Dict[str, Any]) -> Optional[str]:
         return content
 
     return None
+
+
+def post_kimi_request(
+    url: str,
+    *,
+    headers: Dict[str, str],
+    json: Dict[str, Any],
+    timeout: Any,
+) -> requests.Response:
+    """Post to DashScope/Kimi without inheriting shell proxy variables."""
+    with requests.Session() as session:
+        session.trust_env = False
+        return session.post(url, headers=headers, json=json, timeout=timeout)
 
 
 def _should_use_compatible_mode(api_url: str, model: str) -> bool:

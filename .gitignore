@@ -21,7 +21,7 @@ SDN/
 Thumbs.db
 
 # Local environment
-.env.local
+# .env files are explicitly allowed per user request
 *.log
 
 # Build outputs

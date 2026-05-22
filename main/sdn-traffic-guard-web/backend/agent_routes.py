@@ -5,23 +5,33 @@ Agent API路由
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Dict, Any, Optional, List
+from typing import Callable, Dict, Any, Optional, List
 from datetime import datetime
 import traceback
 
+_get_agent_instance: Optional[Callable[[], Any]] = None
+
 # 导入Agent
 try:
-    from .security_agent import get_agent_instance
+    from .security_agent import get_agent_instance as imported_get_agent_instance
+    _get_agent_instance = imported_get_agent_instance
     AGENT_AVAILABLE = True
 except ImportError:
     try:
-        from security_agent import get_agent_instance
+        from security_agent import get_agent_instance as imported_get_agent_instance
+        _get_agent_instance = imported_get_agent_instance
         AGENT_AVAILABLE = True
     except Exception as e:
         print(f"⚠️ Agent模块加载失败: {e}")
         AGENT_AVAILABLE = False
 
 router = APIRouter(prefix="/api/agent", tags=["AI Agent"])
+
+
+def get_agent_instance() -> Any:
+    if _get_agent_instance is None:
+        raise HTTPException(status_code=503, detail="Agent service unavailable")
+    return _get_agent_instance()
 
 
 # ========== 请求/响应模型 ==========
@@ -191,7 +201,8 @@ async def search_knowledge(request: QuickQueryRequest):
     
     try:
         agent = get_agent_instance()
-        knowledge = agent.rag.search_knowledge(request.query, top_k=5)
+        search_result = agent._tool_search_knowledge(request.query)
+        knowledge = search_result.get("data", [])
         
         return {
             "success": True,
@@ -285,7 +296,10 @@ async def call_mcp_tool(request: MCPToolRequest):
             if not request.ip or not request.level or not request.reason:
                 raise HTTPException(status_code=400, detail="缺少参数: ip, level, reason")
             result = agent._tool_apply_rate_limit(
-                request.ip, request.level, request.duration_seconds, request.reason
+                request.ip,
+                request.level,
+                request.duration_seconds if request.duration_seconds is not None else 300,
+                request.reason,
             )
             
         elif tool_name == "add_to_blacklist":

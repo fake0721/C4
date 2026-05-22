@@ -4,7 +4,7 @@ import math
 import re
 import uuid
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -98,7 +98,7 @@ class ExportService:
 
         task_id = str(uuid.uuid4())
         created_at = datetime.now()
-        rows = self._extract_rows(export_type, payload)
+        rows = self._filter_rows_by_hours(self._extract_rows(export_type, payload), filters)
         report = self._build_report(export_type, filters, username, created_at, rows)
         filename = self._build_filename(export_type, export_format, created_at, task_id)
         file_path = self.output_dir / filename
@@ -128,6 +128,61 @@ class ExportService:
         if export_type == "ai_analysis" and payload.get("analysis"):
             return [{"role": "assistant", "content": str(payload["analysis"]), "timestamp": ""}]
         return []
+
+    def _filter_rows_by_hours(self, rows: List[Dict[str, Any]], filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        hours = self._coerce_positive_hours(filters.get("hours"))
+        if not hours:
+            return rows
+
+        cutoff = datetime.now() - timedelta(hours=hours)
+        filtered_rows = []
+        for row in rows:
+            row_time = self._row_datetime(row)
+            if row_time is None or row_time >= cutoff:
+                filtered_rows.append(row)
+        return filtered_rows
+
+    def _coerce_positive_hours(self, value: Any) -> Optional[int]:
+        try:
+            hours = int(value)
+        except (TypeError, ValueError):
+            return None
+        return hours if hours > 0 else None
+
+    def _row_datetime(self, row: Dict[str, Any]) -> Optional[datetime]:
+        for key in ("detect_time", "time", "timestamp", "created_at", "start_time"):
+            value = row.get(key)
+            parsed = self._parse_datetime(value)
+            if parsed is not None:
+                return parsed
+        return None
+
+    def _parse_datetime(self, value: Any) -> Optional[datetime]:
+        if value is None or value == "":
+            return None
+        if isinstance(value, (int, float)):
+            timestamp = float(value)
+            if timestamp > 1_000_000_000_000:
+                timestamp = timestamp / 1000
+            try:
+                return datetime.fromtimestamp(timestamp)
+            except (OverflowError, OSError, ValueError):
+                return None
+        text = str(value).strip()
+        if not text:
+            return None
+        normalized = text.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+            return parsed.replace(tzinfo=None)
+        except ValueError:
+            pass
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+        return None
 
     def _coerce_mapping(self, value: Any) -> Dict[str, Any]:
         return value if isinstance(value, dict) else {"content": str(value)}
@@ -269,34 +324,70 @@ class ExportService:
 
     def _docx_document_xml(self, report: Dict[str, Any]) -> str:
         body_parts = [
-            self._docx_paragraph(report["title"], bold=True, size="36"),
-            self._docx_paragraph(f"导出人: {report['username']}"),
-            self._docx_paragraph(f"导出时间: {report['created_at']}"),
-            self._docx_paragraph(f"筛选条件: {json.dumps(report['filters'], ensure_ascii=False)}"),
-            self._docx_paragraph("报告说明", bold=True, size="28"),
-            self._docx_paragraph(report["summary"]),
-            self._docx_paragraph("统计摘要", bold=True, size="28"),
+            self._docx_paragraph(report["title"], bold=True, size="40", color=PALETTE["navy"], align="center", after="180"),
+            self._docx_meta_table(report),
+            self._docx_section_heading("报告说明"),
+            self._docx_paragraph(report["summary"], after="180"),
+            self._docx_section_heading("统计摘要"),
             self._docx_summary_table(report),
-            self._docx_paragraph("重点发现", bold=True, size="28"),
+            self._docx_section_heading("重点发现"),
             self._docx_list(report["findings"]),
-            self._docx_paragraph("处置建议", bold=True, size="28"),
+            self._docx_section_heading("处置建议"),
             self._docx_list(report["recommendations"]),
-            self._docx_paragraph("事件明细", bold=True, size="28"),
+            self._docx_section_heading("事件明细"),
             self._docx_table(report["columns"], report["rows"]),
         ]
         return (
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-            f"<w:body>{''.join(body_parts)}<w:sectPr/></w:body></w:document>"
+            f"<w:body>{''.join(body_parts)}{self._docx_section_properties()}</w:body></w:document>"
         )
 
-    def _docx_paragraph(self, text: str, bold: bool = False, size: str = "24", color: str = "111827") -> str:
+    def _docx_section_properties(self) -> str:
+        return (
+            "<w:sectPr>"
+            '<w:pgSz w:w="11906" w:h="16838"/>'
+            '<w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="708" w:footer="708" w:gutter="0"/>'
+            "</w:sectPr>"
+        )
+
+    def _docx_paragraph(
+        self,
+        text: str,
+        bold: bool = False,
+        size: str = "24",
+        color: str = "111827",
+        align: str = "left",
+        before: str = "0",
+        after: str = "120",
+        left: str = "0",
+    ) -> str:
         escaped = html.escape(text)
         bold_xml = "<w:b/>" if bold else ""
         return (
-            "<w:p><w:r><w:rPr>"
+            "<w:p><w:pPr>"
+            f'<w:jc w:val="{align}"/><w:spacing w:before="{before}" w:after="{after}"/>'
+            f'<w:ind w:left="{left}"/>'
+            "</w:pPr><w:r><w:rPr>"
             f'{bold_xml}<w:color w:val="{color}"/><w:sz w:val="{size}"/>'
             f"</w:rPr><w:t>{escaped}</w:t></w:r></w:p>"
+        )
+
+    def _docx_section_heading(self, text: str) -> str:
+        return self._docx_paragraph(text, bold=True, size="30", color=PALETTE["navy"], before="220", after="120")
+
+    def _docx_meta_table(self, report: Dict[str, Any]) -> str:
+        rows = [
+            ["导出人", report["username"]],
+            ["导出时间", report["created_at"]],
+            ["筛选条件", json.dumps(report["filters"], ensure_ascii=False)],
+        ]
+        return self._docx_plain_table(
+            rows,
+            header=False,
+            widths=[1800, 7600],
+            shade_first_col=True,
+            after="220",
         )
 
     def _docx_summary_table(self, report: Dict[str, Any]) -> str:
@@ -304,10 +395,13 @@ class ExportService:
         rows += [["主要攻击类型", self._format_counts(report["type_counts"])]]
         rows += [["风险等级分布", self._format_counts(report["severity_counts"])]]
         rows += [["状态/处置分布", self._format_counts(report["status_counts"])]]
-        return self._docx_plain_table(rows, header=True)
+        return self._docx_plain_table(rows, header=True, widths=[2600, 6800])
 
     def _docx_list(self, items: List[str]) -> str:
-        return "".join(self._docx_paragraph(f"{index}. {item}") for index, item in enumerate(items, start=1))
+        return "".join(
+            self._docx_paragraph(f"{index}. {item}", left="360", after="80")
+            for index, item in enumerate(items, start=1)
+        )
 
     def _docx_table(self, columns: Iterable[tuple[str, str]], rows: List[Dict[str, Any]]) -> str:
         columns = list(columns)
@@ -316,17 +410,46 @@ class ExportService:
             table_rows.append([self._cell_text(row.get(key, "")) for _, key in columns])
         if not rows:
             table_rows.append(["暂无可导出的明细数据"] + [""] * (len(columns) - 1))
-        return self._docx_plain_table(table_rows, header=True)
+        return self._docx_plain_table(table_rows, header=True, widths=self._docx_column_widths(len(columns)))
+
+    def _docx_column_widths(self, column_count: int) -> List[int]:
+        if column_count <= 0:
+            return []
+        presets = {
+            2: [2600, 6800],
+            3: [1800, 5200, 2400],
+            4: [1500, 3200, 2500, 2200],
+            5: [1200, 3000, 2400, 2800, 1400],
+        }
+        if column_count in presets:
+            return presets[column_count]
+        return [max(1200, int(9400 / column_count))] * column_count
 
     def _format_counts(self, counts: Dict[str, int]) -> str:
         if not counts:
             return "暂无数据"
         return "；".join(f"{key}: {value}" for key, value in counts.items())
 
-    def _docx_plain_table(self, rows: List[List[str]], header: bool = False) -> str:
+    def _docx_plain_table(
+        self,
+        rows: List[List[str]],
+        header: bool = False,
+        widths: Optional[List[int]] = None,
+        shade_first_col: bool = False,
+        after: str = "180",
+    ) -> str:
+        column_count = max((len(row) for row in rows), default=0)
+        widths = widths or self._docx_column_widths(column_count)
+        if column_count and len(widths) < column_count:
+            widths = widths + [widths[-1] if widths else int(9400 / column_count)] * (column_count - len(widths))
         table_xml = [
             "<w:tbl>",
-            "<w:tblPr><w:tblBorders>"
+            "<w:tblPr>"
+            '<w:tblW w:w="9400" w:type="dxa"/>'
+            '<w:jc w:val="center"/>'
+            '<w:tblCellMar><w:top w:w="90" w:type="dxa"/><w:left w:w="120" w:type="dxa"/>'
+            '<w:bottom w:w="90" w:type="dxa"/><w:right w:w="120" w:type="dxa"/></w:tblCellMar>'
+            "<w:tblBorders>"
             '<w:top w:val="single" w:sz="6" w:space="0" w:color="999999"/>'
             '<w:left w:val="single" w:sz="6" w:space="0" w:color="999999"/>'
             '<w:bottom w:val="single" w:sz="6" w:space="0" w:color="999999"/>'
@@ -334,30 +457,58 @@ class ExportService:
             '<w:insideH w:val="single" w:sz="4" w:space="0" w:color="CCCCCC"/>'
             '<w:insideV w:val="single" w:sz="4" w:space="0" w:color="CCCCCC"/>'
             "</w:tblBorders></w:tblPr>",
+            "<w:tblGrid>",
+            "".join(f'<w:gridCol w:w="{width}"/>' for width in widths[:column_count]),
+            "</w:tblGrid>",
         ]
         for row_index, row in enumerate(rows):
             table_xml.append("<w:tr>")
-            for value in row:
-                table_xml.append(self._docx_cell(value, bold=header and row_index == 0))
+            for column_index, value in enumerate(row):
+                is_header = header and row_index == 0
+                is_label = shade_first_col and column_index == 0
+                table_xml.append(
+                    self._docx_cell(
+                        value,
+                        bold=is_header or is_label,
+                        width=widths[column_index] if column_index < len(widths) else None,
+                        fill=PALETTE["navy"] if is_header else PALETTE["gray"] if is_label else None,
+                        color=PALETTE["white"] if is_header else "111827",
+                        align="center" if is_header else "left",
+                    )
+                )
             table_xml.append("</w:tr>")
         table_xml.append("</w:tbl>")
+        table_xml.append(self._docx_paragraph("", after=after))
         return "".join(table_xml)
 
-    def _docx_cell(self, value: str, bold: bool = False, size: str = "22") -> str:
+    def _docx_cell(
+        self,
+        value: str,
+        bold: bool = False,
+        size: str = "22",
+        width: Optional[int] = None,
+        fill: Optional[str] = None,
+        color: str = "111827",
+        align: str = "left",
+    ) -> str:
         bold_xml = "<w:b/>" if bold else ""
+        width_xml = f'<w:tcW w:w="{width}" w:type="dxa"/>' if width else ""
+        fill_xml = f'<w:shd w:fill="{fill}"/>' if fill else ""
         text_parts = str(value).split("\n")
         runs = "".join(
-            f'<w:r><w:rPr>{bold_xml}<w:color w:val="111827"/><w:sz w:val="{size}"/></w:rPr>'
+            f'<w:r><w:rPr>{bold_xml}<w:color w:val="{color}"/><w:sz w:val="{size}"/></w:rPr>'
             f"<w:t>{html.escape(part)}</w:t></w:r>"
             + ("<w:r><w:br/></w:r>" if index < len(text_parts) - 1 else "")
             for index, part in enumerate(text_parts)
         )
         return (
-            "<w:tc><w:tcPr><w:tcMar>"
+            "<w:tc><w:tcPr>"
+            f"{width_xml}{fill_xml}"
+            "<w:vAlign w:val=\"center\"/><w:tcMar>"
             '<w:top w:w="80" w:type="dxa"/><w:left w:w="80" w:type="dxa"/>'
             '<w:bottom w:w="80" w:type="dxa"/><w:right w:w="80" w:type="dxa"/>'
             "</w:tcMar></w:tcPr>"
-            f"<w:p>{runs}</w:p></w:tc>"
+            f'<w:p><w:pPr><w:jc w:val="{align}"/><w:spacing w:after="0"/></w:pPr>{runs}</w:p></w:tc>'
         )
 
     def _docx_content_types(self) -> str:
@@ -382,72 +533,29 @@ class ExportService:
         )
 
     def _write_pdf(self, path: Path, report: Dict[str, Any]) -> None:
-        stream_parts = []
-        stream_parts.append(self._pdf_rect(0, 520, 842, 75, PALETTE["navy"]))
-        stream_parts.append(self._pdf_text(report["title"], 40, 560, 22, PALETTE["white"]))
-        stream_parts.append(self._pdf_text(f"导出人: {report['username']}    导出时间: {report['created_at']}", 40, 535, 10, PALETTE["white"]))
-        stream_parts.append(self._pdf_text("风险态势仪表盘", 40, 495, 16, PALETTE["navy"]))
-
-        card_x = [40, 238, 436, 634]
-        for x, metric in zip(card_x, report["metrics"]):
-            stream_parts.append(self._pdf_rect(x, 430, 168, 48, metric["color"]))
-            stream_parts.append(self._pdf_text(metric["label"], x + 12, 460, 9, PALETTE["white"]))
-            stream_parts.append(self._pdf_text(metric["value"], x + 12, 440, 18, PALETTE["white"]))
-
-        stream_parts.append(self._pdf_text("攻击类型分布", 40, 398, 13, PALETTE["navy"]))
-        stream_parts.extend(self._pdf_bar_chart(report["type_counts"], 40, 370, 250, [PALETTE["blue"], PALETTE["cyan"], PALETTE["purple"], PALETTE["orange"]]))
-        stream_parts.append(self._pdf_text("风险等级饼图", 455, 398, 13, PALETTE["navy"]))
-        stream_parts.extend(self._pdf_pie_chart(report["severity_counts"], 530, 342, 42, [PALETTE["red"], PALETTE["orange"], PALETTE["green"], PALETTE["slate"]]))
-
-        stream_parts.append(self._pdf_text("重点发现", 40, 270, 12, PALETTE["navy"]))
-        for index, finding in enumerate(report["findings"][:2]):
-            stream_parts.append(self._pdf_text(f"{index + 1}. {self._truncate_for_pdf(finding, 70)}", 40, 250 - index * 16, 8, "111827"))
-        stream_parts.append(self._pdf_text("处置建议", 455, 270, 12, PALETTE["navy"]))
-        for index, recommendation in enumerate(report["recommendations"][:2]):
-            stream_parts.append(self._pdf_text(f"{index + 1}. {self._truncate_for_pdf(recommendation, 52)}", 455, 250 - index * 16, 8, "111827"))
-
-        stream_parts.append(self._pdf_text("事件明细", 40, 205, 13, PALETTE["navy"]))
-        y = 177
-        headers = [label for label, _ in report["columns"]]
-        column_x = [48, 150, 300, 472, 675]
-        column_limits = [12, 22, 22, 24, 14]
-        stream_parts.append(self._pdf_rect(40, y - 5, 760, 22, PALETTE["navy"]))
-        for x, header in zip(column_x, headers[:5]):
-            stream_parts.append(self._pdf_text(header, x, y + 2, 9, PALETTE["white"]))
-        y -= 26
-        for row in report["rows"][:10]:
-            severity = self._normalise_severity(row.get("severity") or row.get("risk_level"))
-            fill = PALETTE["red"] if severity == "high" else PALETTE["orange"] if severity == "medium" else PALETTE["green"] if severity == "low" else PALETTE["gray"]
-            stream_parts.append(self._pdf_rect(40, y - 4, 760, 20, PALETTE["gray"]))
-            stream_parts.append(self._pdf_rect(46, y - 1, 82, 14, fill))
-            values = [
-                self._truncate_for_pdf(self._cell_text(row.get(key, "")), limit)
-                for (_, key), limit in zip(report["columns"][:5], column_limits)
-            ]
-            for index, (x, value) in enumerate(zip(column_x, values)):
-                color = PALETTE["white"] if index == 0 and fill != PALETTE["gray"] else "111827"
-                stream_parts.append(self._pdf_text(value, x, y + 1, 8, color))
-            y -= 22
-        if not report["rows"]:
-            stream_parts.append(self._pdf_text("暂无可导出的明细数据", 50, y, 10, PALETTE["slate"]))
-
-        content = "\n".join(stream_parts).encode("ascii")
+        contents = [
+            "\n".join(self._pdf_dashboard_page(report)).encode("ascii"),
+            "\n".join(self._pdf_detail_page(report)).encode("ascii"),
+        ]
 
         objects = [
             b"<< /Type /Catalog /Pages 2 0 R >>",
-            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 842 595] "
-            b"/Resources << /Font << /F1 4 0 R /F2 7 0 R >> >> /Contents 8 0 R >>",
+            b"/Resources << /Font << /F1 5 0 R /F2 8 0 R >> >> /Contents 9 0 R >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 842 595] "
+            b"/Resources << /Font << /F1 5 0 R /F2 8 0 R >> >> /Contents 10 0 R >>",
             b"<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H "
-            b"/DescendantFonts [5 0 R] >>",
+            b"/DescendantFonts [6 0 R] >>",
             b"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light "
             b"/CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 2 >> "
-            b"/FontDescriptor 6 0 R >>",
+            b"/FontDescriptor 7 0 R >>",
             b"<< /Type /FontDescriptor /FontName /STSong-Light /Flags 6 "
             b"/FontBBox [0 -200 1000 900] /ItalicAngle 0 /Ascent 880 /Descent -120 "
             b"/CapHeight 700 /StemV 80 >>",
             b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-            b"<< /Length " + str(len(content)).encode("ascii") + b" >>\nstream\n" + content + b"\nendstream",
+            b"<< /Length " + str(len(contents[0])).encode("ascii") + b" >>\nstream\n" + contents[0] + b"\nendstream",
+            b"<< /Length " + str(len(contents[1])).encode("ascii") + b" >>\nstream\n" + contents[1] + b"\nendstream",
         ]
 
         pdf = bytearray(b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n")
@@ -469,17 +577,93 @@ class ExportService:
         )
         path.write_bytes(pdf)
 
-    def _pdf_bar_chart(self, counts: Dict[str, int], x: int, y: int, width: int, colors: List[str]) -> List[str]:
+    def _pdf_dashboard_page(self, report: Dict[str, Any]) -> List[str]:
+        stream_parts = self._pdf_header(report["title"], f"导出人: {report['username']}    导出时间: {report['created_at']}")
+        stream_parts.append(self._pdf_text("风险态势仪表盘", 40, 495, 16, PALETTE["navy"]))
+
+        card_x = [40, 238, 436, 634]
+        for x, metric in zip(card_x, report["metrics"]):
+            stream_parts.append(self._pdf_rect(x, 430, 168, 48, metric["color"]))
+            stream_parts.append(self._pdf_text(metric["label"], x + 12, 460, 9, PALETTE["white"]))
+            stream_parts.append(self._pdf_text(metric["value"], x + 12, 440, 18, PALETTE["white"]))
+
+        stream_parts.append(self._pdf_text("攻击类型分布", 40, 398, 13, PALETTE["navy"]))
+        stream_parts.extend(
+            self._pdf_bar_chart(
+                report["type_counts"],
+                40,
+                370,
+                250,
+                [PALETTE["blue"], PALETTE["cyan"], PALETTE["purple"], PALETTE["orange"]],
+                max_items=5,
+            )
+        )
+        stream_parts.append(self._pdf_text("风险等级饼图", 455, 398, 13, PALETTE["navy"]))
+        stream_parts.extend(self._pdf_pie_chart(report["severity_counts"], 530, 342, 42, [PALETTE["red"], PALETTE["orange"], PALETTE["green"], PALETTE["slate"]]))
+
+        stream_parts.append(self._pdf_text("重点发现", 40, 190, 12, PALETTE["navy"]))
+        for index, finding in enumerate(report["findings"][:3]):
+            stream_parts.append(self._pdf_text(f"{index + 1}. {self._truncate_for_pdf(finding, 78)}", 40, 170 - index * 18, 8, "111827"))
+        stream_parts.append(self._pdf_text("处置建议", 455, 190, 12, PALETTE["navy"]))
+        for index, recommendation in enumerate(report["recommendations"][:3]):
+            stream_parts.append(self._pdf_text(f"{index + 1}. {self._truncate_for_pdf(recommendation, 52)}", 455, 170 - index * 18, 8, "111827"))
+        return stream_parts
+
+    def _pdf_detail_page(self, report: Dict[str, Any]) -> List[str]:
+        stream_parts = self._pdf_header("事件明细", f"{report['title']}    记录数: {len(report['rows'])}")
+        headers = [label for label, _ in report["columns"]]
+        column_x = [48, 158, 315, 500, 695]
+        column_limits = [12, 22, 22, 24, 14]
+        y = 455
+
+        stream_parts.append(self._pdf_text("事件明细", 40, 490, 15, PALETTE["navy"]))
+        stream_parts.append(self._pdf_rect(40, y, 760, 24, PALETTE["navy"]))
+        for x, header in zip(column_x, headers[:5]):
+            stream_parts.append(self._pdf_text(header, x, y + 8, 9, PALETTE["white"]))
+
+        y -= 30
+        for row_index, row in enumerate(report["rows"][:18]):
+            severity = self._normalise_severity(row.get("severity") or row.get("risk_level"))
+            fill = PALETTE["red"] if severity == "high" else PALETTE["orange"] if severity == "medium" else PALETTE["green"] if severity == "low" else PALETTE["slate"]
+            row_fill = "EEF2F7" if row_index % 2 == 0 else "F8FAFC"
+            stream_parts.append(self._pdf_rect(40, y - 4, 760, 20, row_fill))
+            stream_parts.append(self._pdf_rect(46, y - 1, 76, 14, fill))
+            values = [
+                self._truncate_for_pdf(self._cell_text(row.get(key, "")), limit)
+                for (_, key), limit in zip(report["columns"][:5], column_limits)
+            ]
+            for index, (x, value) in enumerate(zip(column_x, values)):
+                color = PALETTE["white"] if index == 0 else "111827"
+                stream_parts.append(self._pdf_text(value, x, y + 1, 8, color))
+            y -= 22
+
+        if not report["rows"]:
+            stream_parts.append(self._pdf_text("暂无可导出的明细数据", 50, y, 10, PALETTE["slate"]))
+        elif len(report["rows"]) > 18:
+            stream_parts.append(self._pdf_text(f"仅展示前 18 条，完整记录数: {len(report['rows'])}", 40, 28, 8, PALETTE["slate"]))
+        return stream_parts
+
+    def _pdf_header(self, title: str, meta: str) -> List[str]:
+        return [
+            self._pdf_rect(0, 520, 842, 75, PALETTE["navy"]),
+            self._pdf_text(title, 40, 560, 22, PALETTE["white"]),
+            self._pdf_text(meta, 40, 535, 10, PALETTE["white"]),
+        ]
+
+    def _pdf_bar_chart(self, counts: Dict[str, int], x: int, y: int, width: int, colors: List[str], max_items: int = 6) -> List[str]:
         if not counts:
             return [self._pdf_text("暂无可视化数据", x, y, 9, PALETTE["slate"])]
         commands = []
         max_value = max(counts.values()) or 1
-        for index, (label, value) in enumerate(counts.items()):
-            row_y = y - index * 28
+        items = list(counts.items())
+        for index, (label, value) in enumerate(items[:max_items]):
+            row_y = y - index * 26
             bar_width = max(8, int(value / max_value * width))
             commands.append(self._pdf_text(self._truncate_for_pdf(label, 18), x, row_y + 6, 8, "111827"))
             commands.append(self._pdf_rect(x + 120, row_y, bar_width, 12, colors[index % len(colors)]))
             commands.append(self._pdf_text(str(value), x + 128 + bar_width, row_y + 2, 8, PALETTE["slate"]))
+        if len(items) > max_items:
+            commands.append(self._pdf_text(f"另有 {len(items) - max_items} 类见明细页", x, y - max_items * 26 + 6, 7, PALETTE["slate"]))
         return commands
 
     def _pdf_pie_chart(self, counts: Dict[str, int], cx: int, cy: int, radius: int, colors: List[str]) -> List[str]:

@@ -41,6 +41,44 @@ class SecurityAgentDbCleanupTest(unittest.TestCase):
         self.assertIn("db down", result["error"])
         self.assertNotIn("conn", result["error"])
 
+    def test_query_device_anomalies_returns_connect_error_when_db_connect_fails(self):
+        self._install_fake_rag_service()
+        sys.modules.pop("backend.security_agent", None)
+
+        from backend.security_agent import SecurityAgent
+
+        agent = SecurityAgent.__new__(SecurityAgent)
+
+        with patch("backend.security_agent.pymysql.connect", side_effect=RuntimeError("db down")):
+            result = agent._tool_query_device_anomalies()
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["tool"], "query_device_anomalies")
+        self.assertIn("db down", result["error"])
+        self.assertNotIn("conn", result["error"])
+
+    def test_quick_query_uses_dashscope_rag_response_api(self):
+        self._install_fake_rag_service()
+        sys.modules.pop("backend.security_agent", None)
+
+        from backend.security_agent import SecurityAgent
+
+        class FakeDashScopeRag:
+            async def generate_rag_response(self, query, context=None):
+                return {
+                    "answer": f"answer for {query}",
+                    "source_documents": [{"content": "doc"}],
+                }
+
+        agent = SecurityAgent.__new__(SecurityAgent)
+        agent.rag = FakeDashScopeRag()
+        agent.use_dashscope_embedding = True
+
+        result = agent.quick_query("DDoS")
+
+        self.assertEqual(result["answer"], "answer for DDoS")
+        self.assertEqual(result["knowledge_sources"], [{"content": "doc"}])
+
     def test_call_kimi_llm_retries_after_read_timeout(self):
         self._install_fake_rag_service()
         sys.modules.pop("backend.security_agent", None)
@@ -65,7 +103,7 @@ class SecurityAgentDbCleanupTest(unittest.TestCase):
                 return {"choices": [{"message": {"content": "ok"}}]}
 
         with patch(
-            "backend.security_agent.requests.post",
+            "backend.security_agent.post_kimi_request",
             side_effect=[requests_exceptions.ReadTimeout("slow"), FakeResponse()],
         ) as mock_post:
             with patch("backend.security_agent.time.sleep") as mock_sleep:

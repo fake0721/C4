@@ -1009,14 +1009,13 @@ const handleModalConfirm = async () => {
 // 添加IP到黑名单（实际操作函数）
 const performAddToBlacklist = async (ip) => {
   try {
-    // ✅ 使用JSON格式发送数据，并添加operator参数
-    const response = await axios.post('/v1/acl/black', {
-      ip: ip,
-      ttl: -1,
-      operator: 'admin'  // ✅ 标识为管理员操作，更新attack_sessions
-    }, {
-      headers: { 'Content-Type': 'application/json' }
-    });
+    // Use FormData so this works with both legacy Form(...) routes and
+    // the newer JSON/Form-compatible ACL route.
+    const formData = new FormData();
+    formData.append('ip', ip);
+    formData.append('ttl', '-1');
+
+    const response = await axios.post('/v1/acl/black', formData);
     
     if (response.data.success) {
       showNotification(`IP ${ip} 已成功添加到黑名单`, 'success');

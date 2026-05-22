@@ -109,7 +109,7 @@
         :filters="{ source: 'ai-assistant', conversation_id: currentConversation.id, title: currentConversation.title }"
         :payload="aiExportPayload"
       />
-      
+
       <!-- 指令列表面板 - 卡片设计 -->
       <div v-if="showCommandList" class="bg-white border-b border-gray-200">
         <div class="max-w-4xl mx-auto px-6 py-6">
@@ -534,8 +534,10 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import axios from 'axios'
+import ryuApi from '@/api/ryu'
 import ExportDialog from '@/components/common/ExportDialog.vue'
 
 // 定义消息结构
@@ -543,6 +545,17 @@ interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   timestamp: number
+}
+
+interface FrontendAction {
+  type: 'navigate' | 'open_export_dialog' | 'open_report_export_dialog' | 'execute_report_export' | 'show_command_list' | string
+  path?: string
+  page?: string
+  reason?: string
+  export_type?: string
+  title?: string
+  hours?: number
+  format?: string
 }
 
 // 定义对话结构
@@ -557,6 +570,7 @@ interface Conversation {
 
 // Store
 const userStore = useUserStore()
+const router = useRouter()
 
 // 响应式数据
 const conversations = ref<Conversation[]>([])
@@ -787,6 +801,120 @@ const uploadFileToRAG = async (file: File) => {
   }
 }
 
+const normalizeExportFormat = (format?: string) => {
+  return (format || '').toLowerCase() === 'docx' ? 'docx' : 'pdf'
+}
+
+const downloadBlob = (blob: Blob, filename: string) => {
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.URL.revokeObjectURL(url)
+}
+
+const buildReportExportPayload = async (exportType: string, hours: number) => {
+  if (exportType === 'anomalies' || exportType === 'attack_sessions') {
+    const records = await ryuApi.getAttackSessions(hours, 1000)
+    const items = Array.isArray(records) ? records : []
+    return {
+      items: items.map((item: any) => ({
+        src_ip: item.src_ip,
+        type: item.type || item.anomaly_type,
+        severity: item.severity,
+        detect_time: item.detect_time || item.time,
+        status: item.status || 'pending',
+        details: item.details,
+        rate_kbps: item.rate_kbps
+      }))
+    }
+  }
+
+  return { items: [] }
+}
+
+const executeReportExport = async (action: FrontendAction) => {
+  const exportType = action.export_type || 'anomalies'
+  const format = normalizeExportFormat(action.format)
+  const hours = typeof action.hours === 'number' ? action.hours : 24
+  const payload = await buildReportExportPayload(exportType, hours)
+
+  const response = await ryuApi.createExportTask({
+    export_type: exportType,
+    format,
+    filters: {
+      source: 'ai-assistant-functioncalling',
+      hours
+    },
+    payload
+  })
+
+  const downloadResponse = await ryuApi.downloadExportFile(response.download_url)
+  const filename = response.task?.filename || `${exportType}.${format}`
+  downloadBlob(downloadResponse.data, filename)
+}
+
+const handleFrontendActions = async (actions: FrontendAction[]) => {
+  for (const action of actions) {
+    if (action.type === 'navigate' && action.path) {
+      showNotification('success', '正在跳转页面', action.reason || `即将打开 ${action.path}`)
+      await router.push(action.path)
+      continue
+    }
+
+    if (action.type === 'execute_report_export') {
+      try {
+        showNotification('success', '正在导出报告', action.reason || '正在生成并下载报告文件')
+        await executeReportExport(action)
+        showNotification('success', '导出完成', `${action.title || '报告'} 已开始下载`)
+      } catch (error: any) {
+        console.error('[AI助手] 报告导出失败:', error)
+        showNotification('error', '导出失败', error.response?.data?.detail || error.message || '请稍后重试')
+      }
+      continue
+    }
+
+    if (action.type === 'open_report_export_dialog') {
+      const exportRequest = {
+        path: action.path,
+        export_type: action.export_type,
+        title: action.title,
+        hours: action.hours,
+        format: action.format,
+        reason: action.reason,
+        requested_at: Date.now()
+      }
+
+      sessionStorage.setItem('ai_pending_export_dialog', JSON.stringify(exportRequest))
+      showNotification('success', '正在打开业务报表导出', action.reason || '即将打开对应页面的导出窗口')
+
+      if (action.path && router.currentRoute.value.path !== action.path) {
+        await router.push(action.path)
+      } else {
+        window.dispatchEvent(new CustomEvent('ai:open-export-dialog', { detail: exportRequest }))
+      }
+      continue
+    }
+
+    if (action.type === 'open_export_dialog') {
+      showExportDialog.value = true
+      showNotification('success', '已打开导出面板', action.reason || '可以继续选择导出范围和格式')
+      continue
+    }
+
+    if (action.type === 'show_command_list') {
+      showCommandList.value = true
+      showNotification('success', '已展开功能列表', action.reason || '你可以查看 AI 助手可执行的系统操作')
+      continue
+    }
+
+    console.warn('[AI助手] 未识别的前端动作:', action)
+  }
+}
+
 // 发送消息
 const sendMessage = async () => {
   const message = userInput.value.trim()
@@ -860,6 +988,12 @@ const sendMessage = async () => {
     
     const data = await response.json()
     console.log('[AI助手] 后端响应:', data)
+
+    if (Array.isArray(data.frontend_actions) && data.frontend_actions.length > 0) {
+      aiMessage.content = data.response || '正在执行界面操作...'
+      await handleFrontendActions(data.frontend_actions)
+      return
+    }
     
     if (data.status === 'success') {
       // 成功响应

@@ -14,12 +14,14 @@ try:
         build_kimi_payload,
         build_kimi_request_config,
         extract_kimi_response_content,
+        post_kimi_request,
     )
 except ImportError:
     from dashscope_kimi import (
         build_kimi_payload,
         build_kimi_request_config,
         extract_kimi_response_content,
+        post_kimi_request,
     )
 
 # 加载环境变量
@@ -81,7 +83,7 @@ class AIAgentService:
             )
             
             # 发送请求
-            response = requests.post(request_config["url"], headers=headers, json=data, timeout=30)
+            response = post_kimi_request(request_config["url"], headers=headers, json=data, timeout=30)
             response.raise_for_status()
             
             result = response.json()

@@ -8,17 +8,20 @@ import requests
 import os
 import pymysql
 import time
-from typing import Dict, List, Any, Optional
+from typing import Callable, Dict, List, Any, Optional
 from datetime import datetime
 from dotenv import load_dotenv
 try:
-    from .dashscope_kimi import build_kimi_payload, build_kimi_request_config
+    from .dashscope_kimi import build_kimi_payload, build_kimi_request_config, post_kimi_request
 except ImportError:
-    from dashscope_kimi import build_kimi_payload, build_kimi_request_config
+    from dashscope_kimi import build_kimi_payload, build_kimi_request_config, post_kimi_request
 
 # 加载环境变量
 env_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(env_path)
+
+RAG_SERVICE: Optional[Any] = None
+_get_rag_instance: Optional[Callable[[], Any]] = None
 
 try:
     from .rag_service import rag_service
@@ -30,11 +33,12 @@ except ImportError:
     except ImportError:
         # 降级方案：使用本地RAG
         try:
-            from .rag_system import get_rag_instance
+            from .rag_system import get_rag_instance as imported_get_rag_instance
             RAG_SERVICE = None
         except ImportError:
-            from rag_system import get_rag_instance
+            from rag_system import get_rag_instance as imported_get_rag_instance
             RAG_SERVICE = None
+        _get_rag_instance = imported_get_rag_instance
 
 # 数据库配置
 DB_CONFIG = {
@@ -51,7 +55,7 @@ class SecurityAgent:
     """网络安全智能代理"""
     
     def __init__(self, 
-                 kimi_api_key: str = None,
+                 kimi_api_key: Optional[str] = None,
                  model: str = "kimi-2.5"):
         """
         初始化Security Agent
@@ -76,13 +80,15 @@ class SecurityAgent:
         
         # 混合方案：优先使用阿里云Embedding + Kimi LLM
         if RAG_SERVICE is not None:
-            self.rag = RAG_SERVICE
+            self.rag: Any = RAG_SERVICE
             self.use_dashscope_embedding = True
             print("✅ 使用阿里云DashScope Embedding（RAG检索）")
             # 初始化知识库
             self._initialize_knowledge_base()
         else:
-            self.rag = get_rag_instance()
+            if _get_rag_instance is None:
+                raise RuntimeError("RAG service is unavailable")
+            self.rag = _get_rag_instance()
             self.use_dashscope_embedding = False
             print("✅ 使用本地RAG系统（Embedding）")
             # 构建本地知识库
@@ -172,6 +178,25 @@ class SecurityAgent:
         """调用LLM - 使用Kimi API"""
         return self._call_kimi_llm(prompt, temperature)
     
+    @staticmethod
+    def _run_async(coro: Any, timeout: int = 30) -> Any:
+        """Run an async RAG call from sync agent tools."""
+        import asyncio
+
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+
+        if loop.is_running():
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, coro)
+                return future.result(timeout=timeout)
+
+        return loop.run_until_complete(coro)
+
     def _call_kimi_llm(self, prompt: str, temperature: float = 0.6) -> str:
         """调用Kimi API (kimi-2.5)"""
         try:
@@ -215,10 +240,10 @@ class SecurityAgent:
             max_retries = max(0, int(getattr(self, "kimi_max_retries", 1)))
             connect_timeout = float(getattr(self, "kimi_connect_timeout", 10))
             read_timeout = float(getattr(self, "kimi_read_timeout", 60))
-            response = None
+            response: Optional[requests.Response] = None
             for attempt in range(max_retries + 1):
                 try:
-                    response = requests.post(
+                    response = post_kimi_request(
                         request_config["url"],
                         headers=headers,
                         json=payload,
@@ -231,6 +256,9 @@ class SecurityAgent:
                         raise
                     time.sleep(min(2 ** attempt, 3))
             
+            if response is None:
+                return "Kimi API杩斿洖寮傚父鍝嶅簲"
+
             result = response.json()
             if result.get("choices") and len(result["choices"]) > 0:
                 return result["choices"][0]["message"]["content"]
@@ -413,7 +441,7 @@ class SecurityAgent:
                 conn.close()
 
     # ========== MCP工具2: 查询限速历史 ==========
-    def _tool_query_rate_limit_history(self, ip: str = None, reason: str = None, days: int = 7) -> Dict[str, Any]:
+    def _tool_query_rate_limit_history(self, ip: Optional[str] = None, reason: Optional[str] = None, days: int = 7) -> Dict[str, Any]:
         conn = None
         """
         查询限速历史
@@ -453,12 +481,12 @@ class SecurityAgent:
                 if days == -1:
                     sql = """SELECT src_ip, reason, start_time, kbps 
                              FROM limit_sessions"""
-                    params = []
+                    params: List[Any] = []
                 else:
                     sql = """SELECT src_ip, reason, start_time, kbps 
                              FROM limit_sessions 
                              WHERE start_time >= DATE_SUB(NOW(), INTERVAL %s DAY)"""
-                    params = [days]
+                    params: List[Any] = [days]
                 
                 # 如果指定了IP，添加IP过滤条件
                 if ip and ip != "*":
@@ -518,7 +546,7 @@ class SecurityAgent:
                 conn.close()
 
     # ========== MCP工具3: 查询攻击历史 ==========
-    def _tool_query_attack_history(self, ip: str = None, attack_type: str = None, days: int = 7) -> Dict[str, Any]:
+    def _tool_query_attack_history(self, ip: Optional[str] = None, attack_type: Optional[str] = None, days: int = 7) -> Dict[str, Any]:
         conn = None
         """
         查询攻击历史
@@ -534,13 +562,13 @@ class SecurityAgent:
                     sql = """SELECT src_ip, anomaly_type, packet_count, start_time, end_time, 
                                     status, handle_action
                              FROM attack_sessions"""
-                    params = []
+                    params: List[Any] = []
                 else:
                     sql = """SELECT src_ip, anomaly_type, packet_count, start_time, end_time, 
                                     status, handle_action
                              FROM attack_sessions 
                              WHERE start_time >= DATE_SUB(NOW(), INTERVAL %s DAY)"""
-                    params = [days]
+                    params: List[Any] = [days]
                 
                 # 如果指定了IP，添加IP过滤条件
                 if ip and ip != "*":
@@ -634,7 +662,8 @@ class SecurityAgent:
                 conn.close()
 
     # ========== MCP工具5: 查询设备异常 ==========
-    def _tool_query_device_anomalies(self, device_type: str = None, anomaly_type: str = None, severity: str = None, days: int = 7) -> Dict[str, Any]:
+    def _tool_query_device_anomalies(self, device_type: Optional[str] = None, anomaly_type: Optional[str] = None, severity: Optional[str] = None, days: int = 7) -> Dict[str, Any]:
+        conn = None
         """
         查询设备异常
         可按设备类型、异常类型、严重程度查询，或多条件组合
@@ -649,13 +678,13 @@ class SecurityAgent:
                     sql = """SELECT id, anomaly_type, device_type, device_id, description, severity, 
                                     detected_at, resolved_at, status, handled_by, handled_at, handle_action
                              FROM device_anomalies"""
-                    params = []
+                    params: List[Any] = []
                 else:
                     sql = """SELECT id, anomaly_type, device_type, device_id, description, severity, 
                                     detected_at, resolved_at, status, handled_by, handled_at, handle_action
                              FROM device_anomalies 
                              WHERE detected_at >= DATE_SUB(NOW(), INTERVAL %s DAY)"""
-                    params = [days]
+                    params: List[Any] = [days]
                 
                 # 如果指定了设备类型，添加过滤条件
                 if device_type:
@@ -1741,12 +1770,17 @@ class SecurityAgent:
         print(f"\n🤖 Agent快速查询: {query}")
         
         # 使用RAG生成回答
-        rag_result = self.rag.generate_with_rag(query, top_k=3)
+        if self.use_dashscope_embedding:
+            rag_result = self._run_async(self.rag.generate_rag_response(query))
+            knowledge_sources = rag_result.get("source_documents", [])
+        else:
+            rag_result = self.rag.generate_with_rag(query, top_k=3)
+            knowledge_sources = rag_result.get("knowledge_sources", [])
         
         return {
             "query": query,
             "answer": rag_result['answer'],
-            "knowledge_sources": rag_result['knowledge_sources'],
+            "knowledge_sources": knowledge_sources,
             "timestamp": datetime.now().isoformat(),
             "agent_version": "1.0"
         }

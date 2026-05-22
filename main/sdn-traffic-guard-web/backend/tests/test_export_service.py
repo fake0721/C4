@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import zipfile
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from backend.export_service import ExportService
@@ -73,7 +74,7 @@ class ExportServiceTest(unittest.TestCase):
             self.assertIn("事件明细", document_xml)
             self.assertIn("w:tblBorders", document_xml)
             self.assertNotIn("风险态势仪表盘", document_xml)
-            self.assertNotIn("w:shd", document_xml)
+            self.assertIn('w:shd w:fill="0F2A4A"', document_xml)
 
     def test_pdf_export_uses_latin_font_and_landscape_layout(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -123,6 +124,70 @@ class ExportServiceTest(unittest.TestCase):
             self.assertIn("风险等级饼图".encode("utf-16-be").hex().upper().encode("ascii"), pdf_bytes)
             self.assertIn(b" m ", pdf_bytes)
             self.assertIn(b" l ", pdf_bytes)
+
+    def test_pdf_export_splits_dashboard_and_detail_pages_for_dense_reports(self):
+        payload = {
+            "items": [
+                {
+                    "src_ip": f"192.168.1.{100 + index}",
+                    "type": attack_type,
+                    "severity": "high" if index % 3 == 0 else "low",
+                    "detect_time": "2026-05-18 00:00:00",
+                    "status": "pending" if index % 2 else "handled",
+                }
+                for index, attack_type in enumerate(
+                    [
+                        "黑名单丢弃",
+                        "前端手动限速",
+                        "手动加黑",
+                        "SYN Flood",
+                        "UDP Flood",
+                        "ARP 欺骗",
+                        "端口扫描",
+                        "异常连接",
+                        "DNS 放大",
+                        "ICMP Flood",
+                    ]
+                )
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ExportService(output_dir=tmpdir)
+            result = service.create_export("anomalies", "pdf", {"hours": 24}, "admin", payload)
+
+            pdf_bytes = Path(result["file_path"]).read_bytes()
+
+            self.assertIn(b"/Count 2", pdf_bytes)
+            self.assertEqual(pdf_bytes.count(b"/Type /Page /Parent 2 0 R"), 2)
+            self.assertIn("风险态势仪表盘".encode("utf-16-be").hex().upper().encode("ascii"), pdf_bytes)
+            self.assertIn("事件明细".encode("utf-16-be").hex().upper().encode("ascii"), pdf_bytes)
+
+    def test_filters_payload_rows_by_requested_hours(self):
+        now = datetime.now()
+        payload = {
+            "items": [
+                {
+                    "src_ip": "10.0.0.1",
+                    "type": "SYN Flood",
+                    "severity": "high",
+                    "detect_time": (now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "status": "pending",
+                },
+                {
+                    "src_ip": "10.0.0.2",
+                    "type": "UDP Flood",
+                    "severity": "medium",
+                    "detect_time": (now - timedelta(hours=48)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "status": "handled",
+                },
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ExportService(output_dir=tmpdir)
+            result = service.create_export("anomalies", "docx", {"hours": 24}, "admin", payload)
+
+            self.assertEqual(result["row_count"], 1)
 
 
 if __name__ == "__main__":

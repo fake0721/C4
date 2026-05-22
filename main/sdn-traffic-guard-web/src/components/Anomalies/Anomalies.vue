@@ -9,7 +9,7 @@
         </div>
         <div class="flex flex-wrap justify-end gap-2">
           <button
-            @click="showExportDialog = true"
+            @click="openExportDialog()"
             class="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 text-white shadow-md hover:bg-emerald-700 transition-all duration-200 flex items-center gap-2"
           >
             <i class="fa fa-download"></i>
@@ -35,11 +35,13 @@
     <ExportDialog
       v-model="showExportDialog"
       title="导出异常与攻击报告"
-      default-type="anomalies"
-      :default-hours="selectedPeriod"
+      :default-type="exportDialogDefaults.type"
+      :default-hours="exportDialogDefaultHours"
+      :default-format="exportDialogDefaults.format"
       :export-types="anomalyExportTypes"
       :filters="{ source: 'anomalies-page' }"
       :payload="anomalyExportPayload"
+      :payload-loader="loadAnomalyExportPayload"
     />
 
     <!-- 统计卡片 -->
@@ -241,6 +243,7 @@ import axios from 'axios';
 import * as echarts from 'echarts';
 import ryuApi from '@/api/ryu';
 import ExportDialog from '@/components/common/ExportDialog.vue';
+import { buildAnomalyExportPayload } from '@/utils/anomalyExportPayload.js';
 
 // 定义数据结构
 interface Anomaly {
@@ -257,27 +260,37 @@ interface Anomaly {
   time: string;
 }
 
+interface PendingExportDialog {
+  export_type?: string;
+  hours?: number;
+  format?: string;
+  title?: string;
+  path?: string;
+}
+
 // 响应式数据
 const anomalies = ref<Anomaly[]>([]);  // 用于列表显示（只显示pending状态）
 const allAnomalies = ref<Anomaly[]>([]);  // ✅ 用于图表显示（显示所有状态）
 // ✅ 时间范围：hours=24时后端查询"今日"（从0点到现在），与Dashboard一致
 const selectedPeriod = ref<number>(24); // 默认最近一天（实际查询：今日从0点到现在）
 const showExportDialog = ref(false);
+const exportDialogDefaults = ref({
+  type: 'anomalies',
+  format: 'pdf'
+});
 const anomalyExportTypes = [
   { label: '异常事件报告', value: 'anomalies' },
   { label: '攻击会话摘要', value: 'attack_sessions' }
 ];
-const anomalyExportPayload = computed(() => ({
-  items: (allAnomalies.value.length > 0 ? allAnomalies.value : anomalies.value).map(item => ({
-    src_ip: item.src_ip,
-    type: item.type || item.anomaly_type,
-    severity: item.severity,
-    detect_time: item.detect_time || item.time,
-    status: (item as any).status || 'pending',
-    details: item.details,
-    rate_kbps: item.rate_kbps
-  }))
-}));
+const exportDialogDefaultHours = computed(() => selectedPeriod.value);
+const anomalyExportPayload = computed(() => buildAnomalyExportPayload(
+  allAnomalies.value.length > 0 ? allAnomalies.value : anomalies.value
+));
+
+const loadAnomalyExportPayload = async ({ hours }: { hours: number }) => {
+  const records = await ryuApi.getAttackSessions(hours, 1000);
+  return buildAnomalyExportPayload(Array.isArray(records) ? records : []);
+};
 
 // 时间筛选选项
 const timePeriods = ref([
@@ -285,6 +298,50 @@ const timePeriods = ref([
   { label: '最近三天', value: 72 },
   { label: '最近七天', value: 168 }
 ]);
+
+const normalizeExportFormat = (format?: string) => {
+  const normalized = (format || '').toLowerCase();
+  return normalized === 'docx' ? 'docx' : 'pdf';
+};
+
+const normalizeExportType = (exportType?: string) => {
+  return anomalyExportTypes.some(item => item.value === exportType) ? exportType as string : 'anomalies';
+};
+
+const openExportDialog = async (options: PendingExportDialog = {}) => {
+  exportDialogDefaults.value = {
+    type: normalizeExportType(options.export_type),
+    format: normalizeExportFormat(options.format)
+  };
+
+  if (typeof options.hours === 'number') {
+    selectedPeriod.value = options.hours;
+    await fetchAnomalies();
+  }
+
+  showExportDialog.value = true;
+};
+
+const readPendingExportDialog = (): PendingExportDialog | null => {
+  const raw = sessionStorage.getItem('ai_pending_export_dialog');
+  if (!raw) return null;
+
+  try {
+    const request = JSON.parse(raw) as PendingExportDialog;
+    if (request.path && request.path !== '/anomalies') return null;
+    sessionStorage.removeItem('ai_pending_export_dialog');
+    return request;
+  } catch (error) {
+    console.warn('[Anomalies] 读取AI导出请求失败:', error);
+    sessionStorage.removeItem('ai_pending_export_dialog');
+    return null;
+  }
+};
+
+const handleAiOpenExportDialog = (event: Event) => {
+  const customEvent = event as CustomEvent<PendingExportDialog>;
+  openExportDialog(customEvent.detail || {});
+};
 
 // 统计信息
 const stats = ref({
@@ -916,9 +973,9 @@ const handleResize = () => {
   if (timelineChartInstance && !timelineChartInstance.isDisposed()) timelineChartInstance.resize();
 };
 
-onMounted(() => {
+onMounted(async () => {
   // 初始加载数据
-  fetchAnomalies();
+  await fetchAnomalies();
   
   // 初始化图表
   initCharts();
@@ -928,6 +985,13 @@ onMounted(() => {
   
   // 监听窗口大小变化
   window.addEventListener('resize', handleResize);
+
+  // 接收 AI 助手发起的业务报表导出请求
+  window.addEventListener('ai:open-export-dialog', handleAiOpenExportDialog);
+  const pendingExportDialog = readPendingExportDialog();
+  if (pendingExportDialog) {
+    await openExportDialog(pendingExportDialog);
+  }
 });
 
 onUnmounted(() => {
@@ -942,6 +1006,7 @@ onUnmounted(() => {
   
   // 移除事件监听
   window.removeEventListener('resize', handleResize);
+  window.removeEventListener('ai:open-export-dialog', handleAiOpenExportDialog);
 });
 </script>
 

@@ -43,6 +43,45 @@ class DashScopeKimiConfigTest(unittest.TestCase):
         self.assertEqual(payload["input"]["messages"][1]["content"], "你好")
         self.assertEqual(payload["parameters"]["result_format"], "message")
 
+    def test_post_kimi_request_ignores_environment_proxies(self):
+        from backend import dashscope_kimi
+
+        sessions = []
+
+        class FakeSession:
+            def __init__(self):
+                self.trust_env = True
+                self.post_kwargs = None
+                sessions.append(self)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, **kwargs):
+                self.post_url = url
+                self.post_kwargs = kwargs
+                return "response"
+
+        original_session = dashscope_kimi.requests.Session
+        dashscope_kimi.requests.Session = FakeSession
+        try:
+            response = dashscope_kimi.post_kimi_request(
+                "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+                headers={"Authorization": "Bearer test"},
+                json={"model": "kimi/kimi-k2.5"},
+                timeout=30,
+            )
+        finally:
+            dashscope_kimi.requests.Session = original_session
+
+        self.assertEqual(response, "response")
+        self.assertEqual(len(sessions), 1)
+        self.assertFalse(sessions[0].trust_env)
+        self.assertEqual(sessions[0].post_kwargs["timeout"], 30)
+
 
 if __name__ == "__main__":
     unittest.main()

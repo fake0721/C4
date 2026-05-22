@@ -56,7 +56,7 @@
         <div class="rounded-xl bg-gray-50 p-4 text-sm text-gray-600">
           <div class="flex items-center justify-between">
             <span>预计导出记录</span>
-            <span class="font-bold text-gray-900">{{ rowCount }} 条</span>
+            <span class="font-bold text-gray-900">{{ rowCountText }}</span>
           </div>
           <p class="mt-2 text-xs text-gray-500">导出完成后会自动下载，并在后端记录任务与审计日志。</p>
         </div>
@@ -86,10 +86,17 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import ryuApi from '@/api/ryu'
+import { buildTimeFilteredExportPayload, countTimeFilteredExportRows } from '@/utils/exportFilters.js'
 
 interface ExportTypeOption {
   label: string
   value: string
+}
+
+interface ExportPayloadLoaderOptions {
+  exportType: string
+  hours: number
+  format: string
 }
 
 const props = withDefaults(defineProps<{
@@ -98,11 +105,14 @@ const props = withDefaults(defineProps<{
   exportTypes: ExportTypeOption[]
   defaultType?: string
   defaultHours?: number
+  defaultFormat?: string
   payload?: Record<string, any>
+  payloadLoader?: (options: ExportPayloadLoaderOptions) => Promise<Record<string, any>>
   filters?: Record<string, any>
 }>(), {
   title: '导出报告',
   defaultHours: 24,
+  defaultFormat: 'pdf',
   payload: () => ({}),
   filters: () => ({})
 })
@@ -114,16 +124,18 @@ const emit = defineEmits<{
 
 const formats = ['pdf', 'docx']
 const selectedType = ref(props.defaultType || props.exportTypes[0]?.value || 'anomalies')
-const selectedFormat = ref('pdf')
+const selectedFormat = ref(props.defaultFormat || 'pdf')
 const selectedHours = ref(props.defaultHours)
 const loading = ref(false)
+const payloadLoading = ref(false)
+const loadedPayload = ref<Record<string, any> | null>(null)
 const message = ref('')
 const messageType = ref<'success' | 'error' | 'info'>('info')
+let payloadRequestId = 0
 
-const rowCount = computed(() => {
-  const items = props.payload?.items || props.payload?.messages || []
-  return Array.isArray(items) ? items.length : 0
-})
+const currentPayload = computed(() => loadedPayload.value || props.payload)
+const rowCount = computed(() => countTimeFilteredExportRows(currentPayload.value, selectedHours.value))
+const rowCountText = computed(() => payloadLoading.value ? '加载中...' : `${rowCount.value} 条`)
 
 const messageClass = computed(() => {
   if (messageType.value === 'success') return 'bg-green-50 text-green-700'
@@ -135,9 +147,17 @@ watch(() => props.modelValue, (visible) => {
   if (visible) {
     selectedType.value = props.defaultType || props.exportTypes[0]?.value || 'anomalies'
     selectedHours.value = props.defaultHours
-    selectedFormat.value = 'pdf'
+    selectedFormat.value = props.defaultFormat || 'pdf'
+    loadedPayload.value = null
     message.value = ''
     messageType.value = 'info'
+    void refreshLoadedPayload()
+  }
+})
+
+watch([selectedHours, selectedType], () => {
+  if (props.modelValue) {
+    void refreshLoadedPayload()
   }
 })
 
@@ -156,12 +176,45 @@ const downloadBlob = (blob: Blob, filename: string) => {
   window.URL.revokeObjectURL(url)
 }
 
+const loadPayloadForCurrentSelection = async () => {
+  if (!props.payloadLoader) {
+    return props.payload
+  }
+
+  const requestId = ++payloadRequestId
+  payloadLoading.value = true
+  const payload = await props.payloadLoader({
+    exportType: selectedType.value,
+    hours: selectedHours.value,
+    format: selectedFormat.value
+  })
+
+  if (requestId === payloadRequestId) {
+    loadedPayload.value = payload || {}
+    payloadLoading.value = false
+  }
+  return payload || {}
+}
+
+const refreshLoadedPayload = async () => {
+  if (!props.payloadLoader) return
+
+  try {
+    await loadPayloadForCurrentSelection()
+  } catch (error: any) {
+    payloadLoading.value = false
+    message.value = error.response?.data?.detail || error.message || '加载导出数据失败'
+    messageType.value = 'error'
+  }
+}
+
 const submitExport = async () => {
   loading.value = true
   message.value = '正在生成导出文件，请稍候...'
   messageType.value = 'info'
 
   try {
+    const exportPayload = await loadPayloadForCurrentSelection()
     const filters = {
       ...props.filters,
       hours: selectedHours.value || undefined
@@ -170,7 +223,7 @@ const submitExport = async () => {
       export_type: selectedType.value,
       format: selectedFormat.value,
       filters,
-      payload: props.payload
+      payload: buildTimeFilteredExportPayload(exportPayload, selectedHours.value)
     })
 
     const downloadResponse = await ryuApi.downloadExportFile(response.download_url)

@@ -88,6 +88,8 @@ class UnifiedAIService:
             
             # 重试机制
             max_retries = 3
+            headers: Dict[str, str] = {}
+            data: Dict[str, Any] = {}
             for retry_count in range(max_retries):
                 if not kimi_rate_limiter.can_make_request(estimated_tokens):
                     wait_time = kimi_rate_limiter.get_wait_time()
@@ -145,7 +147,7 @@ class UnifiedAIService:
                 }
             else:
                 # 非流式响应
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(trust_env=False) as client:
                     response = await client.post(
                         self.deepseek_api_url,
                         headers=headers,
@@ -199,6 +201,9 @@ class UnifiedAIService:
             
             # 重试机制
             max_retries = 3
+            headers: Dict[str, str] = {}
+            data: Dict[str, Any] = {}
+            request_config: Dict[str, str] = {}
             for retry_count in range(max_retries):
                 if not kimi_rate_limiter.can_make_request(estimated_tokens):
                     wait_time = kimi_rate_limiter.get_wait_time()
@@ -262,7 +267,7 @@ class UnifiedAIService:
                 }
             else:
                 # 非流式响应
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(trust_env=False) as client:
                     response = await client.post(
                         request_config["url"],
                         headers=headers,
@@ -305,7 +310,7 @@ class UnifiedAIService:
 
     async def _generate_deepseek_stream_response(self, data: Dict[str, Any], headers: Dict[str, str]):
         """生成DeepSeek流式响应"""
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(trust_env=False) as client:
             async with client.stream(
                 "POST",
                 self.deepseek_api_url,
@@ -333,7 +338,7 @@ class UnifiedAIService:
 
     async def _generate_stream_response(self, request_url: str, data: Dict[str, Any], headers: Dict[str, str]):
         """生成Kimi流式响应"""
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(trust_env=False) as client:
             async with client.stream(
                 "POST",
                 request_url,
@@ -397,7 +402,7 @@ class UnifiedAIService:
                 "message": f"添加知识库失败：{str(e)}"
             }
     
-    async def rag_query(self, query: str, k: int = 3, documents: List[Dict[str, str]] = None) -> Dict[str, Any]:
+    async def rag_query(self, query: str, k: int = 3, documents: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         """使用RAG查询知识库"""
         if not self.vector_store:
             return {
@@ -472,7 +477,7 @@ class UnifiedAIService:
                 "error": str(e)
             }
     
-    async def clear_knowledge_base(self, user_id: int = None) -> Dict[str, Any]:
+    async def clear_knowledge_base(self, user_id: Optional[int] = None) -> Dict[str, Any]:
         """清空知识库"""
         if user_id:
             # 如果有用户ID，清空该用户的知识库（需要实现用户特定的知识库）
@@ -635,7 +640,7 @@ class UnifiedAIService:
             
             # 如果API不可用，使用本地RAG或本地模型
             if use_rag and self.vector_store:
-                rag_result = await self.rag_query(message, context)
+                rag_result = await self.rag_query(message)
                 if rag_result:
                     return rag_result
             

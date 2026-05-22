@@ -12,13 +12,14 @@ import uuid
 import json
 import os
 import logging
+import re
 from decimal import Decimal
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from functools import wraps
 from dotenv import load_dotenv
 
-from fastapi import APIRouter, Form, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Form, HTTPException, Query, UploadFile, File, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import pymysql
@@ -31,17 +32,17 @@ logger = logging.getLogger(__name__)
 
 # 自定义JSON编码器，支持Decimal类型
 class DecimalEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, Decimal):
-            return float(obj)
-        return super().default(obj)
+    def default(self, o):
+        if isinstance(o, Decimal):
+            return float(o)
+        return super().default(o)
 
 router = APIRouter(prefix="/v1", tags=["v1"])
 
 # ---------- 配置 ----------
 RYU_BASE = "http://192.168.126.128:8080/v1"
 TIMEOUT = 10
-DB_CONFIG = {
+DB_CONFIG: Dict[str, Any] = {
     'host': '192.168.126.1',
     'user': 'root',
     'password': 'wcp13636938197HM',
@@ -77,6 +78,268 @@ class ThresholdBody(BaseModel):
     syn_threshold: Optional[int] = None
     udp_threshold: Optional[int] = None
     icmp_threshold: Optional[int] = None
+
+class AclEntryPayload(BaseModel):
+    ip: str
+    ttl: int = -1
+    operator: Optional[str] = None
+
+
+FRONTEND_PAGE_ACTIONS = [
+    {
+        "page": "dashboard",
+        "path": "/dashboard",
+        "keywords": ["首页", "看板", "dashboard", "概览", "主页", "主页面", "首页面"],
+    },
+    {
+        "page": "anomalies",
+        "path": "/anomalies",
+        "keywords": ["异常", "攻击", "安全事件", "anomalies"],
+    },
+    {
+        "page": "ratelimit",
+        "path": "/ratelimit",
+        "keywords": ["限速", "速率", "ratelimit", "rate limit", "限速管理"],
+    },
+    {
+        "page": "flowtable",
+        "path": "/flowtable",
+        "keywords": ["流表", "流表管理", "flow", "flowtable"],
+    },
+    {
+        "page": "knowledge",
+        "path": "/knowledge",
+        "keywords": ["知识库", "文档上传", "上传文档", "上传知识库文档", "knowledge"],
+    },
+    {
+        "page": "ai_assistant",
+        "path": "/ai-assistant",
+        "keywords": ["ai助手", "ai 助手", "助手页面"],
+    },
+    {
+        "page": "account_details",
+        "path": "/account-details",
+        "keywords": ["账户详情", "个人信息", "账号详情", "账号信息", "账户信息", "account"],
+    },
+    {
+        "page": "change_password",
+        "path": "/change-password",
+        "keywords": ["修改密码", "改密码", "change password", "密码页面"],
+    },
+]
+
+
+EXPORT_REPORT_ACTIONS = [
+    {
+        "export_type": "anomalies",
+        "title": "导出异常与攻击报告",
+        "path": "/anomalies",
+        "keywords": ["异常与攻击", "异常攻击", "异常事件", "异常报告", "攻击报告", "异常", "攻击"],
+    },
+    {
+        "export_type": "attack_sessions",
+        "title": "导出异常与攻击报告",
+        "path": "/anomalies",
+        "keywords": ["攻击会话", "会话摘要", "攻击会话摘要"],
+    },
+    {
+        "export_type": "handling_records",
+        "title": "导出处置记录报告",
+        "path": "/ratelimit",
+        "keywords": ["处置记录", "处理记录", "限速记录", "限速历史", "处置报告"],
+    },
+    {
+        "export_type": "ai_analysis",
+        "title": "导出 AI 研判报告",
+        "path": "/ai-assistant",
+        "keywords": ["ai研判", "ai 研判", "本次分析", "聊天记录", "对话记录"],
+    },
+]
+
+
+def _extract_export_options(message: str) -> Dict[str, Any]:
+    normalized = (message or "").strip().lower()
+    options: Dict[str, Any] = {}
+
+    if "docx" in normalized or "word" in normalized:
+        options["format"] = "docx"
+    elif "pdf" in normalized:
+        options["format"] = "pdf"
+
+    if any(keyword in normalized for keyword in ["不限时间", "全部时间", "所有时间"]):
+        options["hours"] = 0
+    elif any(keyword in normalized for keyword in ["最近七天", "近七天", "7天", "一周", "最近一周"]):
+        options["hours"] = 168
+    elif any(keyword in normalized for keyword in ["最近三天", "近三天", "3天"]):
+        options["hours"] = 72
+    elif any(keyword in normalized for keyword in ["最近一天", "近一天", "1天", "今天", "今日"]):
+        options["hours"] = 24
+
+    return options
+
+
+def _is_open_export_dialog_request(normalized_message: str) -> bool:
+    return any(keyword in normalized_message for keyword in ["打开", "面板", "弹窗", "窗口", "页面"])
+
+
+def _mask_sensitive_action(action: Dict[str, Any]) -> Dict[str, Any]:
+    masked = dict(action)
+    if "new_password" in masked:
+        masked["new_password"] = "***"
+    return masked
+
+
+def resolve_frontend_action(message: str) -> Optional[Dict[str, Any]]:
+    normalized = (message or "").strip().lower()
+    if not normalized:
+        return None
+
+    if any(keyword in normalized for keyword in ["功能列表", "指令列表", "能操作系统", "可操作系统", "系统操作能力"]):
+        return {
+            "type": "show_command_list",
+            "tool": "show_command_list",
+            "reason": "用户要求查看系统操作能力列表",
+        }
+
+    if "导出" in normalized and any(keyword in normalized for keyword in ["报告", "文档", "记录", "摘要"]):
+        for report in EXPORT_REPORT_ACTIONS:
+            if any(keyword.lower() in normalized for keyword in report["keywords"]):
+                options = _extract_export_options(message)
+                if _is_open_export_dialog_request(normalized):
+                    action = {
+                        "type": "open_report_export_dialog",
+                        "tool": "open_report_export_dialog",
+                        "path": report["path"],
+                        "export_type": report["export_type"],
+                        "title": report["title"],
+                        "reason": f"用户要求{message.strip()}",
+                    }
+                    action.update(options)
+                    return action
+
+                action = {
+                    "type": "execute_report_export",
+                    "tool": "export_report_file",
+                    "export_type": report["export_type"],
+                    "title": report["title"],
+                    "hours": options.get("hours", 24),
+                    "format": options.get("format", "pdf"),
+                    "reason": f"用户要求{message.strip()}",
+                }
+                return action
+
+    if "导出" in normalized and any(keyword in normalized for keyword in ["面板", "弹窗", "页面", "打开", "文档", "报告"]):
+        return {
+            "type": "open_export_dialog",
+            "tool": "open_export_dialog",
+            "export_type": "ai_analysis",
+            "reason": "用户要求打开导出面板",
+        }
+
+    navigation_verbs = [
+        "跳转",
+        "打开",
+        "进入",
+        "去",
+        "切到",
+        "切换到",
+        "带我去",
+        "帮我打开",
+        "前往",
+        "返回",
+        "回到",
+        "我要",
+        "我想",
+    ]
+    if not any(verb in normalized for verb in navigation_verbs):
+        return None
+
+    for page in FRONTEND_PAGE_ACTIONS:
+        if any(keyword.lower() in normalized for keyword in page["keywords"]):
+            return {
+                "type": "navigate",
+                "tool": "navigate_to_page",
+                "page": page["page"],
+                "path": page["path"],
+                "reason": f"用户要求{message.strip()}",
+            }
+
+    return None
+
+
+def _default_frontend_action_response(action: Dict[str, Any]) -> str:
+    if action["type"] == "navigate":
+        return f"好呀，我已经帮你跳转到 {action['path']} 啦 😊"
+    elif action["type"] == "execute_report_export":
+        return f"好呀，我正在帮你导出{action.get('title', '报告')}，文件会自动下载 ✨"
+    elif action["type"] == "open_report_export_dialog":
+        return f"好呀，我已经帮你打开{action.get('title', '导出报告')}窗口啦，可以直接确认导出 ✨"
+    elif action["type"] == "open_export_dialog":
+        return "好呀，我已经帮你打开导出面板啦，可以直接选择导出内容了 ✨"
+    elif action["type"] == "show_command_list":
+        return "当然可以，我把目前能帮你直接操作系统的能力列出来啦 😊"
+    return "好呀，我已经帮你执行这个系统操作啦 😊"
+
+
+def build_frontend_action_response(
+    action: Dict[str, Any],
+    agent: Optional[Any] = None,
+    user_message: str = "",
+) -> Dict[str, Any]:
+    response = _default_frontend_action_response(action)
+
+    if agent is not None:
+        action_context = json.dumps(_mask_sensitive_action(action), ensure_ascii=False, indent=2)
+        response_prompt = f"""
+【系统设定】
+你是一个友好、活泼的网络安全AI助手。
+你的名字是"小杜"，这是你的唯一身份。
+你正在帮助用户操作当前这个SDN流量防护管理系统。
+
+【用户原话】
+{user_message}
+
+【系统操作执行结果】
+已经成功调用前端工具并触发界面动作：
+{action_context}
+
+【回答要求】
+1. 按照“小杜”的语气回答，温暖、自然、简洁，可以适当使用表情符号
+2. 必须明确告诉用户你已经帮他执行了这个系统操作
+3. 不要输出JSON、不要输出工具内部字段、不要用【调用工具】这类机械模板
+4. 不要把页面跳转类请求回答成数据查询结果
+5. 只回答1到2句话
+
+现在请回复用户：
+"""
+        try:
+            response = agent._call_llm(response_prompt, temperature=0.6)
+        except Exception as exc:
+            print(f"[WARN] 系统操作回复生成失败，使用默认回复: {exc}")
+
+    return {
+        "status": "success",
+        "response": response,
+        "tools_called": [action["tool"]],
+        "tool_results": {action["tool"]: action},
+        "frontend_actions": [action],
+        "message": "ok",
+    }
+
+
+async def parse_acl_entry_payload(request: Request) -> AclEntryPayload:
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        payload = await request.json()
+        raw_payload: Dict[str, Any] = payload if isinstance(payload, dict) else {}
+    else:
+        form = await request.form()
+        raw_payload = {key: value for key, value in form.items() if isinstance(value, str)}
+
+    try:
+        return AclEntryPayload(**raw_payload)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 # ---------- 工具 ----------
 
@@ -201,11 +464,12 @@ def _get_default_tool_decision(user_message: str) -> str:
 
 def cached_query(key: str, sql: str, params: tuple, ttl: int = 60) -> List[Dict]:
     """纯 MySQL 版，不使用 Redis"""
+    conn = None
     try:
         conn = pymysql.connect(**DB_CONFIG)
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(sql, params)
-            rows = cur.fetchall()
+            rows = list(cur.fetchall())
             # datetime → 时间戳
             for row in rows:
                 for k, v in row.items():
@@ -553,7 +817,7 @@ async def get_ports():
     return proxy_get("ports")
 
 @router.get("/flowstats")
-async def get_flowstats(port: str = "1", start: str = None, end: str = None):
+async def get_flowstats(port: str = "1", start: Optional[str] = None, end: Optional[str] = None):
     # 无时间参数 → 缓存加速 + 仅最近 4 小时（48 点）
     if start is None and end is None:
         day = datetime.now().strftime('%Y-%m-%d')
@@ -603,7 +867,7 @@ async def get_flow_trend():
         return {"data": [], "count": 0, "error": str(e)}
 
 @router.get("/portrate")
-async def get_port_rate(port: str = "1", start: str = None, end: str = None):
+async def get_port_rate(port: str = "1", start: Optional[str] = None, end: Optional[str] = None):
     if start is None and end is None:
         day = datetime.now().strftime('%Y-%m-%d')
         key = cache_key("portrate", day, port)
@@ -629,7 +893,7 @@ async def get_port_rate(port: str = "1", start: str = None, end: str = None):
         return {"success": False, "data": [], "message": str(e)}
 
 @router.get("/protocolratio")
-async def get_protocol_ratio(port: str = "1", start: str = None, end: str = None):
+async def get_protocol_ratio(port: str = "1", start: Optional[str] = None, end: Optional[str] = None):
     if start is None and end is None:
         day = datetime.now().strftime('%Y-%m-%d')
         key = cache_key("protocolratio", day, port)
@@ -695,20 +959,20 @@ async def chat_with_tools(req: ChatRequest):
     聊天接口 - 智能路由（通用对话 vs 数据查询）
     一次性返回完整响应（不使用流式）
     """
-    import json
-    import re
-    
     try:
-        from security_agent import get_agent_instance
-        
-        agent = get_agent_instance()
         user_message = req.user
         
         print(f"[DEBUG] 聊天请求: {user_message[:50]}")
+
+        import json
+        import re
+        from security_agent import get_agent_instance
+
+        agent = get_agent_instance()
         
         # 第1步：意图识别 - 判断是否需要调用工具
         intent_prompt = f"""
-你是一个网络安全AI助手。你的名字叫小杜，分析用户的问题，判断是否需要调用数据库或知识库工具。
+你是一个网络安全AI助手。你的名字叫小杜，分析用户的问题，先判断用户意图，再决定是否需要调用工具或操作系统界面。
 
 用户问题："{user_message}"
 
@@ -716,6 +980,7 @@ async def chat_with_tools(req: ChatRequest):
 1. 【通用对话】- 闲聊、问名字、问功能等，不需要查询数据
 2. 【文档问题】- 用户问关于上传的文档内容、总结、分析等
 3. 【数据查询】- 需要查询网络拓扑、IP信息、系统状态等
+4. 【系统操作】- 用户要求你直接操作当前Web系统，比如跳转页面、打开页面、打开弹窗、进入模块、切换页面、返回主页、打开导出面板、导出业务报告、打开修改密码页面、展示可操作功能列表等
 
 通用对话的例子：
 - "你好"
@@ -736,12 +1001,40 @@ async def chat_with_tools(req: ChatRequest):
 - "当前系统状态如何？"
 - "查看网络拓扑"
 
-请直接回答：【通用对话】或【文档问题】或【数据查询】
+系统操作的例子：
+- "跳转到首页看板"
+- "帮我打开导出面板"
+- "导出异常与攻击报告"
+- "帮我导出最近三天的异常与攻击报告 docx"
+- "打开修改密码页面"
+- "进入知识库"
+- "切换到流表管理"
+- "返回主页"
+
+重要规则：
+- 如果用户使用"打开、跳转、进入、切换、返回、带我去、帮我打开"等词要求操作界面，优先判断为【系统操作】
+- "首页看板"如果出现在"跳转/打开/进入首页看板"里，是系统操作，不是数据查询
+- 只有用户想看数据内容、分析态势、查询列表时，才判断为【数据查询】
+
+请直接回答：【通用对话】或【文档问题】或【数据查询】或【系统操作】
 """
         
-        intent_response = agent._call_llm(intent_prompt, temperature=0.3)
+        try:
+            intent_response = agent._call_llm(intent_prompt, temperature=0.3)
+        except Exception as exc:
+            print(f"[WARN] LLM意图识别失败，尝试本地系统操作兜底: {exc}")
+            fallback_action = resolve_frontend_action(user_message)
+            if fallback_action:
+                print(f"[DEBUG] 本地兜底前端工具决策: {_mask_sensitive_action(fallback_action)}")
+                return build_frontend_action_response(
+                    fallback_action,
+                    agent=None,
+                    user_message=user_message,
+                )
+            raise
         is_data_query = "数据查询" in intent_response
         is_document_question = "文档问题" in intent_response
+        is_system_operation = "系统操作" in intent_response
         
         print(f"[DEBUG] 意图识别结果: {intent_response}")
         
@@ -750,6 +1043,58 @@ async def chat_with_tools(req: ChatRequest):
             print(f"[DEBUG] 检测到用户上传了文件，强制识别为文档问题")
             is_document_question = True
             is_data_query = False
+            is_system_operation = False
+        
+        frontend_action = None
+        if not is_document_question:
+            frontend_action = resolve_frontend_action(user_message)
+            if frontend_action and not is_system_operation:
+                print("[DEBUG] 决策层检测到可执行系统动作，校准意图为【系统操作】")
+                is_system_operation = True
+                is_data_query = False
+        
+        if is_system_operation:
+            print(f"[DEBUG] 识别为系统操作，决策是否调用前端工具")
+            if frontend_action:
+                print(f"[DEBUG] 前端工具决策: {_mask_sensitive_action(frontend_action)}")
+                return build_frontend_action_response(
+                    frontend_action,
+                    agent=agent,
+                    user_message=user_message,
+                )
+            
+            unsupported_prompt = f"""
+【系统设定】
+你是一个友好、活泼的网络安全AI助手，名字叫小杜。
+
+【用户请求】
+{user_message}
+
+【系统操作决策结果】
+我判断用户想操作系统，但当前没有匹配到可以安全执行的前端工具。
+
+【当前可直接操作的能力】
+- 跳转到：首页看板、异常检测、限速管理、流表管理、知识库、AI助手、账户详情、修改密码
+- 直接导出异常与攻击、攻击会话、处置记录、AI研判等报告文件，或打开对应导出窗口
+- 展示可操作功能列表
+
+【回答要求】
+1. 用中文自然回复，保持小杜的温暖语气
+2. 告诉用户这个具体操作暂时还不能直接执行
+3. 简要提示目前可以执行哪些相近操作
+4. 不要输出JSON或工具字段
+
+请回复用户：
+"""
+            final_response = agent._call_llm(unsupported_prompt, temperature=0.7)
+            return {
+                "status": "success",
+                "response": final_response,
+                "tools_called": [],
+                "tool_results": {},
+                "frontend_actions": [],
+                "message": "ok"
+            }
         
         # 如果是文档问题，从知识库检索文档内容
         if is_document_question:
@@ -1683,9 +2028,12 @@ async def put_settings(body: ThresholdBody):
 # ---------- ACL 黑名单管理接口 ----------
 
 @router.post("/acl/black")
-async def add_blacklist(ip: str = Form(...), ttl: int = Form(-1)):
+async def add_blacklist(request: Request):
     """添加IP到黑名单"""
     try:
+        payload = await parse_acl_entry_payload(request)
+        ip = payload.ip
+        ttl = payload.ttl
         data = {"ip": ip, "ttl": ttl}
         print(f"[DEBUG] 添加黑名单请求: {data}")
         r = requests.post(f"{RYU_BASE}/acl/black", json=data, timeout=TIMEOUT)
@@ -1714,9 +2062,12 @@ async def remove_blacklist(ip: str):
 # ---------- ACL 白名单管理接口 ----------
 
 @router.post("/acl/white")
-async def add_whitelist(ip: str = Form(...), ttl: int = Form(-1)):
+async def add_whitelist(request: Request):
     """添加IP到白名单"""
     try:
+        payload = await parse_acl_entry_payload(request)
+        ip = payload.ip
+        ttl = payload.ttl
         data = {"ip": ip, "ttl": ttl}
         print(f"[DEBUG] 添加白名单请求: {data}")
         r = requests.post(f"{RYU_BASE}/acl/white", json=data, timeout=TIMEOUT)
@@ -2045,6 +2396,7 @@ async def get_device_anomalies(
     status: Optional[str] = Query(None, description="状态过滤：pending|handled")
 ):
     """查询设备异常记录（支持时间范围与状态过滤）"""
+    conn = None
     try:
         conn = pymysql.connect(**DB_CONFIG)
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
@@ -2104,6 +2456,7 @@ async def handle_device_anomaly(anomaly_id: int, req: dict):
     """将设备异常状态更新为 handled，并记录处理人与时间"""
     handled_by = req.get('handled_by', 'admin')
     handle_action = req.get('handle_action', 'frontend_resolve')
+    conn = None
     try:
         conn = pymysql.connect(**DB_CONFIG)
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
@@ -2144,7 +2497,7 @@ class MCPToolRequest(BaseModel):
     ip: Optional[str] = None  # IP地址（可选）
     attack_type: Optional[str] = None  # 攻击类型（可选）
     level: Optional[str] = None  # 限速档位（可选）
-    duration_seconds: Optional[int] = 300  # 限速时长（可选）
+    duration_seconds: int = 300  # 限速时长（可选）
     reason: Optional[str] = None  # 原因（可选）
 
 
@@ -2212,8 +2565,9 @@ async def call_mcp_tool(request: MCPToolRequest):
         elif tool_name == "apply_rate_limit":
             if not request.ip or not request.level or not request.reason:
                 raise HTTPException(status_code=400, detail="缺少参数: ip, level, reason")
+            duration_seconds = request.duration_seconds if request.duration_seconds is not None else 300
             result = agent._tool_apply_rate_limit(
-                request.ip, request.level, request.duration_seconds, request.reason
+                request.ip, request.level, duration_seconds, request.reason
             )
             
         elif tool_name == "add_to_blacklist":
@@ -2381,10 +2735,15 @@ async def upload_knowledge_document(file: UploadFile = File(...)):
     
     try:
         print(f"[📄] 接收到文件上传: {file.filename}")
+
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="文件名不能为空")
+
+        original_filename = file.filename
         
         # 验证文件类型
         allowed_extensions = {'.txt', '.pdf', '.csv', '.docx'}
-        file_ext = Path(file.filename).suffix.lower()
+        file_ext = Path(original_filename).suffix.lower()
         
         if file_ext not in allowed_extensions:
             raise HTTPException(
@@ -2420,7 +2779,7 @@ async def upload_knowledge_document(file: UploadFile = File(...)):
             from knowledge_integration import get_knowledge_integrator
             
             integrator = get_knowledge_integrator()
-            result = integrator.add_document_sync(str(tmp_path), file.filename)
+            result = integrator.add_document_sync(str(tmp_path), original_filename)
             
             if result['success']:
                 return {

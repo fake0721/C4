@@ -1,0 +1,6 @@
+{
+  "ignore": [
+    "main/sdn-traffic-guard-web/SDN/sdn_smart.py",
+    "main/sdn-traffic-guard-web/SDN/smart_defense_switch.py"
+  ]
+}
